@@ -9,3 +9,4 @@ something out of it while you work.
 ## Posts
 
 - [Week 2 — Mind map and moodboards](week02/)
+- [Week 3 — Pitch deck](week03/)
