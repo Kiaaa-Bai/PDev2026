@@ -1,6 +1,8 @@
 import { Container, Sprite } from "pixi.js";
 import type { FarmSim } from "../sims/farm";
+import type { Finger } from "../pointers";
 import { TILES, tex } from "../tiles";
+import { PointerLayer } from "./pointer";
 
 const CELL = 32;
 
@@ -9,7 +11,12 @@ export class FarmView {
   private crops: Sprite[] = [];
   private seen = -1;
 
-  constructor(private sim: FarmSim) {
+  private pointers = new PointerLayer(TILES.farm.pointer);
+
+  constructor(
+    private sim: FarmSim,
+    private fingers: ReadonlyMap<number, Finger> = new Map(),
+  ) {
     const { cols, rows } = sim.cfg;
     for (let i = 0; i < cols * rows; i++) {
       const x = (i % cols) * CELL;
@@ -25,9 +32,11 @@ export class FarmView {
       this.root.addChild(crop);
       this.crops.push(crop);
     }
+    this.root.addChild(this.pointers.root);
   }
 
   update(_now: number): void {
+    this.pointers.sync(this.fingers);
     if (this.sim.version === this.seen) return;
     this.seen = this.sim.version;
     for (let i = 0; i < this.crops.length; i++) {

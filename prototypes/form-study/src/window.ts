@@ -61,7 +61,7 @@ async function boot() {
   const farm = new FarmSim(FARM);
   const monster = new MonsterSim(MONSTER);
   const sims: Sim[] = [city, farm, monster];
-  const views = [new HeatView(heat, fingers), new CityView(city), new FarmView(farm), new MonsterView(monster)];
+  const views = [new HeatView(heat, fingers), new CityView(city, fingers), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
   views.forEach((v) => app.stage.addChild(v.root));
   const live = new LiveStrokes();
   let touched = 0;

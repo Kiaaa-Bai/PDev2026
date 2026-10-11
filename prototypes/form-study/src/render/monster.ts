@@ -1,6 +1,8 @@
 import { Container, Graphics, Sprite } from "pixi.js";
 import type { MonsterSim } from "../sims/monster";
+import type { Finger } from "../pointers";
 import { TILES, tex } from "../tiles";
+import { PointerLayer } from "./pointer";
 
 const CELL = 32;
 const POOF_MS = 300;
@@ -12,7 +14,12 @@ export class MonsterView {
   private live: { cell: number; born: number }[] = [];
   private seen = -1;
 
-  constructor(private sim: MonsterSim) {
+  private pointers = new PointerLayer(TILES.monster.pointer);
+
+  constructor(
+    private sim: MonsterSim,
+    private fingers: ReadonlyMap<number, Finger> = new Map(),
+  ) {
     const { cols, rows } = sim.cfg;
     for (let i = 0; i < cols * rows; i++) {
       const x = (i % cols) * CELL;
@@ -28,10 +35,11 @@ export class MonsterView {
       this.root.addChild(m);
       this.monsters.push(m);
     }
-    this.root.addChild(this.effects);
+    this.root.addChild(this.effects, this.pointers.root);
   }
 
   update(now: number): void {
+    this.pointers.sync(this.fingers);
     for (const p of this.sim.poofs.splice(0)) this.live.push({ cell: p.cell, born: now });
     this.live = this.live.filter((p) => now - p.born < POOF_MS);
     this.effects.clear();

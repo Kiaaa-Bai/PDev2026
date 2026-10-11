@@ -1,4 +1,5 @@
 import type { Point, Stroke } from "./data";
+import type { Finger } from "./pointers";
 import type { Sim } from "./sims/types";
 
 /** Feed a recorded day to the sims in time order. */
@@ -29,14 +30,20 @@ function toPoint(e: PointerEvent, el: HTMLElement, t: number): Point {
   return { t, x: clamp((e.clientX - rect.left) / rect.width), y: clamp((e.clientY - rect.top) / rect.height) };
 }
 
-/** Mouse drags on any target become live strokes for every sim. */
-export function attachLive(targets: HTMLElement[], getSims: () => Sim[], now: () => number = Date.now): void {
+/** Mouse drags on any target become live strokes for every sim; the mouse shows as finger 0 while down. */
+export function attachLive(
+  targets: HTMLElement[],
+  getSims: () => Sim[],
+  fingers: Map<number, Finger>,
+  now: () => number = Date.now,
+): void {
   let down = false;
   for (const el of targets) {
     el.addEventListener("pointerdown", (e) => {
       el.setPointerCapture(e.pointerId);
       down = true;
       const p = toPoint(e, el, now());
+      fingers.set(0, { x: p.x, y: p.y });
       for (const sim of getSims()) {
         sim.advanceTo(p.t);
         sim.beginStroke(p.t);
@@ -46,11 +53,13 @@ export function attachLive(targets: HTMLElement[], getSims: () => Sim[], now: ()
     el.addEventListener("pointermove", (e) => {
       if (!down) return;
       const p = toPoint(e, el, now());
+      fingers.set(0, { x: p.x, y: p.y });
       for (const sim of getSims()) sim.addPoints([p]);
     });
     const end = () => {
       if (!down) return;
       down = false;
+      fingers.delete(0);
       for (const sim of getSims()) sim.endStroke();
     };
     el.addEventListener("pointerup", end);

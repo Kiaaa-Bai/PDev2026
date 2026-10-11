@@ -3,6 +3,7 @@ import type { Container } from "pixi.js";
 import { CITY, FARM, MONSTER, MONSTER_LIVE_SPAWN_MS } from "./config";
 import { parseJsonl, toStrokes } from "./data";
 import { attachLive, inputSims, replay } from "./drive";
+import type { Finger } from "./pointers";
 import { CityView } from "./render/city";
 import { FarmView } from "./render/farm";
 import { MonsterView } from "./render/monster";
@@ -29,12 +30,14 @@ interface World {
 
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 const host = document.querySelector<HTMLElement>("#panels")!;
+/** The mouse while it is pressed, drawn as each form's tool. */
+const fingers = new Map<number, Finger>();
 
 function makeWorld(mode: World["mode"], panels: Panel[]): World {
   const city = new CitySim(CITY);
   const farm = new FarmSim(FARM);
   const monster = new MonsterSim(mode === "live" ? { ...MONSTER, spawnIntervalMs: MONSTER_LIVE_SPAWN_MS } : MONSTER);
-  const views: View[] = [new CityView(city), new FarmView(farm), new MonsterView(monster)];
+  const views: View[] = [new CityView(city, fingers), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
   views.forEach((v, i) => panels[i].app.stage.addChild(v.root));
   return { mode, sims: [city, farm, monster], views, monster };
 }
@@ -48,6 +51,7 @@ async function boot() {
   attachLive(
     panels.map((p) => p.canvas),
     () => inputSims(world.mode, world.sims),
+    fingers,
   );
 
   function swap(next: World) {

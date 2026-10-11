@@ -11,16 +11,19 @@ export const TILES = {
     grass: "town_0000",
     // hut → orange-roof cottage → grey-roof house
     buildings: ["town_0092", "town_0067", "town_0063"],
+    pointer: { tile: "dungeon_0117", anchor: [0.5, 0.3] }, // hammer, head on the finger
   },
   farm: {
     soil: "farm_0063",
     // cabbage: sprout → leaves → bigger leaves → ripe head
     stages: ["farm_0052", "farm_0053", "farm_0054", "farm_0056"],
+    pointer: { tile: "farm_0084", anchor: [0.1, 0.35] }, // watering can, spout on the finger
   },
   monster: {
     floor: "dungeon_0048",
     // green slime, red crab, bat, ghost
     kinds: ["dungeon_0108", "dungeon_0110", "dungeon_0120", "dungeon_0121"],
+    pointer: { tile: "dungeon_0104", anchor: [0.5, 0.05] }, // sword, tip on the finger
   },
 } as const;
 
@@ -34,6 +37,9 @@ export async function loadTiles(): Promise<void> {
     ...TILES.farm.stages,
     TILES.monster.floor,
     ...TILES.monster.kinds,
+    TILES.city.pointer.tile,
+    TILES.farm.pointer.tile,
+    TILES.monster.pointer.tile,
   ]);
   for (const name of names) {
     const url = urls[`./assets/tiles/${name}.png`];

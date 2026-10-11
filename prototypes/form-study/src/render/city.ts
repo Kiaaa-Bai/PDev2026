@@ -1,6 +1,8 @@
 import { Container, Graphics, Sprite } from "pixi.js";
 import { roadMask, type CitySim } from "../sims/city";
+import type { Finger } from "../pointers";
 import { TILES, tex } from "../tiles";
+import { PointerLayer } from "./pointer";
 
 const T = 16;
 const ROAD = 0x8b8579;
@@ -11,7 +13,12 @@ export class CityView {
   private buildings: Sprite[] = [];
   private seen = -1;
 
-  constructor(private sim: CitySim) {
+  private pointers = new PointerLayer(TILES.city.pointer);
+
+  constructor(
+    private sim: CitySim,
+    private fingers: ReadonlyMap<number, Finger> = new Map(),
+  ) {
     const { cols, rows } = sim.cfg;
     for (let i = 0; i < cols * rows; i++) {
       const grass = new Sprite(tex(TILES.city.grass));
@@ -26,9 +33,11 @@ export class CityView {
       this.root.addChild(b);
       this.buildings.push(b);
     }
+    this.root.addChild(this.pointers.root);
   }
 
   update(_now: number): void {
+    this.pointers.sync(this.fingers);
     if (this.sim.version === this.seen) return;
     this.seen = this.sim.version;
     const { cols, rows, wideRoadAt } = this.sim.cfg;
