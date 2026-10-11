@@ -3,10 +3,9 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Application } from "pixi.js";
 import { CITY, FARM, MONSTER } from "./config";
-import { parseJsonl, toStrokes, type TouchRecord } from "./data";
-import { replay } from "./drive";
+import { parseJsonl, type TouchRecord } from "./data";
+import { Feeder } from "./drive";
 import { Heat } from "./heat";
-import { LiveStrokes } from "./live";
 import { CityView } from "./render/city";
 import { FarmView } from "./render/farm";
 import { HeatView } from "./render/heat";
@@ -20,6 +19,7 @@ import { loadTiles } from "./tiles";
 
 const TABS = ["Heat", "City", "Farm", "Monster"];
 const TAB_KEY = "trackpad.tab";
+const CITY_TAB = 1;
 /** Keep repainting this long after a change, so the defeat flash can play out. */
 const SETTLE_MS = 400;
 
@@ -61,9 +61,9 @@ async function boot() {
   const farm = new FarmSim(FARM);
   const monster = new MonsterSim(MONSTER);
   const sims: Sim[] = [city, farm, monster];
-  const views = [new HeatView(heat, fingers), new CityView(city, fingers), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
+  const views = [new HeatView(heat, fingers), new CityView(city), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
   views.forEach((v) => app.stage.addChild(v.root));
-  const live = new LiveStrokes();
+  const feeder = new Feeder(() => sims);
   let touched = 0;
 
   function take(r: TouchRecord) {
@@ -74,8 +74,7 @@ async function boot() {
       fingers.set(r.id, { x: r.x, y: r.y });
       heat.add(r.x, r.y);
     }
-    const stroke = live.push(r);
-    if (stroke) replay([stroke], sims);
+    feeder.push(r);
   }
 
   // Listen before reading today's file so touches made meanwhile are kept.
@@ -90,8 +89,10 @@ async function boot() {
 
   const source = await invoke<string>("capture_source");
   const today = parseJsonl(await invoke<string>("today_text"));
-  for (const r of today) if (r.state !== "up") heat.add(r.x, r.y);
-  replay(toStrokes(today), sims);
+  for (const r of today) {
+    if (r.state !== "up") heat.add(r.x, r.y);
+    feeder.push(r);
+  }
   monster.poofs.length = 0;
   // Queued touches that already made it into the file were counted above.
   const lastInFile = today.length ? today[today.length - 1].t : -Infinity;
@@ -129,7 +130,10 @@ async function boot() {
   function frame() {
     const now = performance.now();
     for (const sim of sims) sim.advanceTo(Date.now());
-    const sig = [heat.version, city.version, farm.version, monster.version, touched, active].join(",");
+    // The roller moves on its own, so the City tab repaints as it crosses each pixel.
+    const at = city.rollerAt();
+    const cityMotion = active === CITY_TAB ? `${Math.round(at.x * 16)},${Math.round(at.y * 16)},${Math.floor(city.time() / 5000)}` : "";
+    const sig = [heat.version, city.version, farm.version, monster.version, touched, active, cityMotion].join(",");
     if (sig !== lastSig || shown !== active) {
       lastSig = sig;
       shown = active;

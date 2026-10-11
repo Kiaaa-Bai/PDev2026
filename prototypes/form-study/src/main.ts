@@ -2,7 +2,7 @@ import "./style.css";
 import type { Container } from "pixi.js";
 import { CITY, FARM, MONSTER, MONSTER_LIVE_SPAWN_MS } from "./config";
 import { parseJsonl, toStrokes } from "./data";
-import { attachLive, inputSims, replay } from "./drive";
+import { attachLive, Feeder, inputSims } from "./drive";
 import type { Finger } from "./pointers";
 import { CityView } from "./render/city";
 import { FarmView } from "./render/farm";
@@ -26,6 +26,7 @@ interface World {
   sims: Sim[];
   views: View[];
   monster: MonsterSim;
+  feeder: Feeder;
 }
 
 const statusEl = document.querySelector<HTMLElement>("#status")!;
@@ -37,9 +38,10 @@ function makeWorld(mode: World["mode"], panels: Panel[]): World {
   const city = new CitySim(CITY);
   const farm = new FarmSim(FARM);
   const monster = new MonsterSim(mode === "live" ? { ...MONSTER, spawnIntervalMs: MONSTER_LIVE_SPAWN_MS } : MONSTER);
-  const views: View[] = [new CityView(city, fingers), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
+  const views: View[] = [new CityView(city), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
   views.forEach((v, i) => panels[i].app.stage.addChild(v.root));
-  return { mode, sims: [city, farm, monster], views, monster };
+  const sims = [city, farm, monster];
+  return { mode, sims, views, monster, feeder: new Feeder(() => sims) };
 }
 
 async function boot() {
@@ -48,10 +50,15 @@ async function boot() {
   for (const title of ["City", "Farm", "Monster"]) panels.push(await createPanel(host, title));
 
   let world = makeWorld("live", panels);
+  // The mouse is finger 0: it shows as each form's tool and, in live mode, drives the forms.
+  const liveFeeder = new Feeder(() => inputSims(world.mode, world.sims));
   attachLive(
     panels.map((p) => p.canvas),
-    () => inputSims(world.mode, world.sims),
-    fingers,
+    (r) => {
+      if (r.state === "up") fingers.delete(r.id);
+      else fingers.set(r.id, { x: r.x, y: r.y });
+      liveFeeder.push(r);
+    },
   );
 
   function swap(next: World) {
@@ -60,13 +67,14 @@ async function boot() {
   }
 
   function loadText(text: string, name: string) {
-    const strokes = toStrokes(parseJsonl(text));
+    const records = parseJsonl(text);
+    const strokes = toStrokes(records);
     if (strokes.length === 0) {
       statusEl.textContent = `No touch records in ${name}`;
       return;
     }
     swap(makeWorld("file", panels));
-    replay(strokes, world.sims);
+    for (const r of records) world.feeder.push(r);
     world.monster.poofs.length = 0;
     statusEl.textContent = `${name}: ${strokes.length.toLocaleString()} strokes · Reset to draw`;
   }

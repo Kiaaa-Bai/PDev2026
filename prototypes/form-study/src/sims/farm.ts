@@ -17,24 +17,30 @@ export class FarmSim implements Sim {
   readonly stage: Uint8Array;
   harvested = 0;
   version = 0;
-  private cells: StrokeCells;
+  /** One stroke per finger that is down. */
+  private strokes = new Map<number, StrokeCells>();
 
   constructor(readonly cfg: FarmConfig) {
     const n = cfg.cols * cfg.rows;
     this.water = new Uint16Array(n);
     this.stage = new Uint8Array(n);
-    this.cells = new StrokeCells(cfg.cols, cfg.rows);
   }
 
-  beginStroke(_t: number): void {
-    this.cells.begin();
+  beginStroke(id: number, _t: number): void {
+    const cells = new StrokeCells(this.cfg.cols, this.cfg.rows);
+    cells.begin();
+    this.strokes.set(id, cells);
   }
 
-  addPoints(points: Point[]): void {
-    for (const i of this.cells.push(points)) this.waterPlot(i);
+  addPoints(id: number, points: Point[]): void {
+    const cells = this.strokes.get(id);
+    if (!cells) return;
+    for (const i of cells.push(points)) this.waterPlot(i);
   }
 
-  endStroke(): void {}
+  endStroke(id: number): void {
+    this.strokes.delete(id);
+  }
 
   advanceTo(_t: number): void {}
 

@@ -25,14 +25,14 @@ export class MonsterSim implements Sim {
   loot = 0;
   alive = 0;
   version = 0;
-  private cells: StrokeCells;
+  /** One stroke per finger that is down. */
+  private strokes = new Map<number, StrokeCells>();
   private rand: () => number;
   private clock: number | null = null;
   private nextSpawn = 0;
 
   constructor(readonly cfg: MonsterConfig) {
     this.monster = new Uint8Array(cfg.cols * cfg.rows);
-    this.cells = new StrokeCells(cfg.cols, cfg.rows);
     this.rand = mulberry32(cfg.seed);
   }
 
@@ -50,15 +50,18 @@ export class MonsterSim implements Sim {
     for (let k = 0; k < Math.min(due, this.cfg.cap); k++) this.spawnOne();
   }
 
-  beginStroke(t: number): void {
+  beginStroke(id: number, t: number): void {
     this.advanceTo(t);
-    this.cells.begin();
+    const cells = new StrokeCells(this.cfg.cols, this.cfg.rows);
+    cells.begin();
+    this.strokes.set(id, cells);
   }
 
-  addPoints(points: Point[]): void {
-    if (points.length === 0) return;
+  addPoints(id: number, points: Point[]): void {
+    const cells = this.strokes.get(id);
+    if (!cells || points.length === 0) return;
     this.advanceTo(points[points.length - 1].t);
-    for (const i of this.cells.push(points)) {
+    for (const i of cells.push(points)) {
       if (!this.monster[i]) continue;
       this.monster[i] = 0;
       this.alive -= 1;
@@ -68,7 +71,9 @@ export class MonsterSim implements Sim {
     }
   }
 
-  endStroke(): void {}
+  endStroke(id: number): void {
+    this.strokes.delete(id);
+  }
 
   private spawnOne(): void {
     if (this.alive >= this.cfg.cap) return;

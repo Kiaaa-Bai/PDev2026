@@ -1,94 +1,190 @@
 import type { Point } from "../data";
-import { StrokeCells } from "../grid";
 import { mulberry32 } from "../rng";
 import type { Sim } from "./types";
 
 export interface CityConfig {
-  cols: number;
-  rows: number;
-  /** Strokes through a cell before it becomes road. */
-  roadThreshold: number;
-  /** Traffic at which a road is drawn wide. */
+  /** Tiles per second while driving. */
+  speed: number;
+  /** How far a finger must move (0–1 of the pad) before it steers. */
+  steerMin: number;
+  /** The roller parks this long after the last touch. */
+  idleStopMs: number;
+  /** A lot beside new road gets its house after a delay in this range. */
+  lotDelayMs: [number, number];
+  /** Chance that a free cell beside new road becomes a lot. */
+  lotChance: number;
+  /** House age at which it grows to tier 2 and tier 3. */
+  tierAgesMs: [number, number];
+  /** Times a cell must be driven before its road is drawn wide. */
   wideRoadAt: number;
-  /** Build chance per crossing = min(1, buildChance × road traffic). */
-  buildChance: number;
-  /** Road traffic for building tiers 1, 2, 3. */
-  tierThresholds: [number, number, number];
   seed: number;
 }
 
-export function tierFor(traffic: number, [a, b, c]: [number, number, number]): 0 | 1 | 2 | 3 {
-  if (traffic >= c) return 3;
-  if (traffic >= b) return 2;
-  if (traffic >= a) return 1;
-  return 0;
-}
+/** Headings: 0 east, 1 south, 2 west, 3 north. */
+export type Dir = 0 | 1 | 2 | 3;
+export const DX = [1, 0, -1, 0] as const;
+export const DY = [0, 1, 0, -1] as const;
 
-export function neighbors4(i: number, cols: number, rows: number): number[] {
-  const c = i % cols;
-  const r = Math.floor(i / cols);
-  const out: number[] = [];
-  if (r > 0) out.push(i - cols);
-  if (c < cols - 1) out.push(i + 1);
-  if (r < rows - 1) out.push(i + cols);
-  if (c > 0) out.push(i - 1);
-  return out;
-}
+export const cellKey = (x: number, y: number) => `${x},${y}`;
 
-export function roadMask(road: Uint8Array, cols: number, rows: number, i: number): number {
-  const c = i % cols;
-  const r = Math.floor(i / cols);
+/** Road neighbours as a bitmask: N=1, E=2, S=4, W=8. */
+export function roadMaskAt(has: (x: number, y: number) => boolean, x: number, y: number): number {
   let m = 0;
-  if (r > 0 && road[i - cols]) m |= 1;
-  if (c < cols - 1 && road[i + 1]) m |= 2;
-  if (r < rows - 1 && road[i + cols]) m |= 4;
-  if (c > 0 && road[i - 1]) m |= 8;
+  if (has(x, y - 1)) m |= 1;
+  if (has(x + 1, y)) m |= 2;
+  if (has(x, y + 1)) m |= 4;
+  if (has(x - 1, y)) m |= 8;
   return m;
 }
 
+/**
+ * A steamroller on an endless map. It keeps driving while touches keep coming,
+ * turns to the direction a finger moves, paves every cell it enters, and houses
+ * grow on lots beside new road.
+ */
 export class CitySim implements Sim {
-  readonly traffic: Uint32Array;
-  readonly road: Uint8Array;
-  readonly building: Uint8Array;
+  /** Times each cell has been driven. */
+  readonly road = new Map<string, number>();
+  /** Lots beside road, mapped to the time their house appears. */
+  readonly lots = new Map<string, number>();
+  readonly roller = { x: 0, y: 0, dir: 0 as Dir, progress: 0 };
+  driven = 0;
   version = 0;
-  private cells: StrokeCells;
   private rand: () => number;
+  private msPerCell: number;
+  private clock: number | null = null;
+  private lastInput = -Infinity;
+  private started = false;
+  /** Where each finger last steered from. */
+  private anchors = new Map<number, Point>();
 
   constructor(readonly cfg: CityConfig) {
-    const n = cfg.cols * cfg.rows;
-    this.traffic = new Uint32Array(n);
-    this.road = new Uint8Array(n);
-    this.building = new Uint8Array(n);
-    this.cells = new StrokeCells(cfg.cols, cfg.rows);
     this.rand = mulberry32(cfg.seed);
+    this.msPerCell = 1000 / cfg.speed;
   }
 
-  beginStroke(_t: number): void {
-    this.cells.begin();
+  beginStroke(id: number, t: number): void {
+    this.touch(t);
+    this.anchors.delete(id);
   }
 
-  addPoints(points: Point[]): void {
-    for (const i of this.cells.push(points)) {
-      this.traffic[i] += 1;
-      if (!this.road[i] && this.traffic[i] >= this.cfg.roadThreshold) {
-        this.road[i] = 1;
-        this.building[i] = 0;
+  addPoints(id: number, points: Point[]): void {
+    for (const p of points) {
+      this.advanceTo(p.t);
+      this.touch(p.t);
+      const from = this.anchors.get(id);
+      if (!from) {
+        this.anchors.set(id, p);
+        continue;
       }
-      if (this.road[i]) this.growAround(i);
-      this.version++;
+      const dx = p.x - from.x;
+      const dy = p.y - from.y;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < this.cfg.steerMin) continue;
+      this.anchors.set(id, p);
+      const dir: Dir = Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 0 : 2) : dy > 0 ? 1 : 3;
+      if (dir !== this.roller.dir) {
+        this.roller.dir = dir;
+        this.roller.progress = 0;
+        this.version++;
+      }
     }
   }
 
-  endStroke(): void {}
+  endStroke(id: number): void {
+    this.anchors.delete(id);
+  }
 
-  advanceTo(_t: number): void {}
-
-  private growAround(i: number): void {
-    const tier = tierFor(this.traffic[i], this.cfg.tierThresholds);
-    const chance = Math.min(1, this.cfg.buildChance * this.traffic[i]);
-    for (const n of neighbors4(i, this.cfg.cols, this.cfg.rows)) {
-      if (this.road[n]) continue;
-      if (tier > this.building[n] && this.rand() < chance) this.building[n] = tier;
+  advanceTo(t: number): void {
+    if (this.clock === null) {
+      this.clock = t;
+      return;
     }
+    if (t <= this.clock) return;
+    const until = Math.min(t, this.lastInput + this.cfg.idleStopMs);
+    if (this.started && until > this.clock) this.drive(this.clock, until);
+    this.clock = t;
+  }
+
+  /** The city's clock: the time of the last advance (the recording's time when replaying). */
+  time(): number {
+    return this.clock ?? 0;
+  }
+
+  /** True while the roller waits for the next touch. */
+  parked(): boolean {
+    return !this.started || this.clock === null || this.clock >= this.lastInput + this.cfg.idleStopMs;
+  }
+
+  /** The roller's position in tiles, between cells while it moves. */
+  rollerAt(): { x: number; y: number } {
+    const { x, y, dir, progress } = this.roller;
+    return { x: x + DX[dir] * progress, y: y + DY[dir] * progress };
+  }
+
+  hasRoad(x: number, y: number): boolean {
+    return this.road.has(cellKey(x, y));
+  }
+
+  /** 0 for no house yet, else the house's tier at time t. */
+  houseTier(x: number, y: number, t: number): 0 | 1 | 2 | 3 {
+    const ready = this.lots.get(cellKey(x, y));
+    if (ready === undefined || t < ready) return 0;
+    let age = t - ready;
+    if (this.besideBusyRoad(x, y)) age *= 3;
+    const [two, three] = this.cfg.tierAgesMs;
+    return age >= three ? 3 : age >= two ? 2 : 1;
+  }
+
+  /** Houses standing at time t. */
+  houses(t: number): number {
+    let n = 0;
+    for (const ready of this.lots.values()) if (ready <= t) n++;
+    return n;
+  }
+
+  private touch(t: number): void {
+    if (t > this.lastInput) this.lastInput = t;
+    if (!this.started) {
+      this.started = true;
+      this.pave(this.roller.x, this.roller.y, t);
+    }
+  }
+
+  private drive(from: number, until: number): void {
+    let t = from;
+    for (;;) {
+      const toNext = (1 - this.roller.progress) * this.msPerCell;
+      if (t + toNext > until) {
+        this.roller.progress += (until - t) / this.msPerCell;
+        return;
+      }
+      t += toNext;
+      this.roller.progress = 0;
+      this.roller.x += DX[this.roller.dir];
+      this.roller.y += DY[this.roller.dir];
+      this.driven++;
+      this.pave(this.roller.x, this.roller.y, t);
+    }
+  }
+
+  private pave(x: number, y: number, t: number): void {
+    const k = cellKey(x, y);
+    this.road.set(k, (this.road.get(k) ?? 0) + 1);
+    this.lots.delete(k);
+    const [lo, hi] = this.cfg.lotDelayMs;
+    for (let d = 0; d < 4; d++) {
+      const nk = cellKey(x + DX[d], y + DY[d]);
+      if (this.road.has(nk) || this.lots.has(nk)) continue;
+      if (this.rand() >= this.cfg.lotChance) continue;
+      this.lots.set(nk, t + lo + this.rand() * (hi - lo));
+    }
+    this.version++;
+  }
+
+  private besideBusyRoad(x: number, y: number): boolean {
+    for (let d = 0; d < 4; d++) {
+      if ((this.road.get(cellKey(x + DX[d], y + DY[d])) ?? 0) >= 2) return true;
+    }
+    return false;
   }
 }

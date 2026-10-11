@@ -11,7 +11,6 @@ export const TILES = {
     grass: "town_0000",
     // hut → orange-roof cottage → grey-roof house
     buildings: ["town_0092", "town_0067", "town_0063"],
-    pointer: { tile: "dungeon_0117", anchor: [0.5, 0.3] }, // hammer, head on the finger
   },
   farm: {
     soil: "farm_0063",
@@ -37,7 +36,6 @@ export async function loadTiles(): Promise<void> {
     ...TILES.farm.stages,
     TILES.monster.floor,
     ...TILES.monster.kinds,
-    TILES.city.pointer.tile,
     TILES.farm.pointer.tile,
     TILES.monster.pointer.tile,
   ]);

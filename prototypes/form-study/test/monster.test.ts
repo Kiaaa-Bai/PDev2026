@@ -43,9 +43,9 @@ describe("MonsterSim", () => {
     const [cell] = occupied(sim);
     const x = ((cell % cfg.cols) + 0.5) / cfg.cols;
     const y = (Math.floor(cell / cfg.cols) + 0.5) / cfg.rows;
-    sim.beginStroke(1100);
-    sim.addPoints([{ t: 1100, x, y }]);
-    sim.endStroke();
+    sim.beginStroke(1, 1100);
+    sim.addPoints(1, [{ t: 1100, x, y }]);
+    sim.endStroke(1);
     expect(sim.monster[cell]).toBe(0);
     expect(sim.loot).toBe(1);
     expect(sim.alive).toBe(0);

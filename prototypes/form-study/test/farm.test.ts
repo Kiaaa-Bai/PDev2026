@@ -10,9 +10,9 @@ const across: Point[] = [
 
 function strokes(sim: FarmSim, n: number, points = across) {
   for (let i = 0; i < n; i++) {
-    sim.beginStroke(points[0].t);
-    sim.addPoints(points);
-    sim.endStroke();
+    sim.beginStroke(1, points[0].t);
+    sim.addPoints(1, points);
+    sim.endStroke(1);
   }
 }
 
@@ -48,5 +48,17 @@ describe("FarmSim", () => {
     strokes(sim, 6);
     expect([...sim.stage.slice(4)]).toEqual([0, 0, 0, 0]);
     expect([...sim.water.slice(4)]).toEqual([0, 0, 0, 0]);
+  });
+
+  it("keeps two fingers that are down at once apart", () => {
+    const sim = new FarmSim(cfg);
+    sim.beginStroke(1, 0);
+    sim.addPoints(1, [{ t: 0, x: 0.05, y: 0.25 }]);
+    sim.beginStroke(2, 1);
+    sim.addPoints(2, [{ t: 1, x: 0.05, y: 0.75 }]);
+    sim.addPoints(1, [{ t: 2, x: 0.95, y: 0.25 }]);
+    sim.endStroke(1);
+    sim.endStroke(2);
+    expect([...sim.water]).toEqual([1, 1, 1, 1, 1, 0, 0, 0]);
   });
 });

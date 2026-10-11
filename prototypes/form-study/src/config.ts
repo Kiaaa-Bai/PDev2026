@@ -3,12 +3,13 @@ import type { FarmConfig } from "./sims/farm";
 import type { MonsterConfig } from "./sims/monster";
 
 export const CITY: CityConfig = {
-  cols: 32,
-  rows: 20,
-  roadThreshold: 3,
-  wideRoadAt: 12,
-  buildChance: 0.05,
-  tierThresholds: [3, 10, 25],
+  speed: 1,
+  steerMin: 0.03,
+  idleStopMs: 5 * 60_000,
+  lotDelayMs: [3_000, 15_000],
+  lotChance: 0.6,
+  tierAgesMs: [5 * 60_000, 20 * 60_000],
+  wideRoadAt: 3,
   seed: 42,
 };
 

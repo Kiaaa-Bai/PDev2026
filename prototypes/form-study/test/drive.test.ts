@@ -1,41 +1,53 @@
 import { describe, expect, it } from "vitest";
-import type { Point, Stroke } from "../src/data";
-import { inputSims, replay } from "../src/drive";
+import type { Point, TouchRecord, TouchState } from "../src/data";
+import { Feeder, inputSims } from "../src/drive";
 import type { Sim } from "../src/sims/types";
 
 class Spy implements Sim {
   log: string[] = [];
-  beginStroke(t: number) {
-    this.log.push(`begin ${t}`);
+  beginStroke(id: number, t: number) {
+    this.log.push(`begin ${id}@${t}`);
   }
-  addPoints(points: Point[]) {
-    this.log.push(`add ${points.length}`);
+  addPoints(id: number, points: Point[]) {
+    this.log.push(`add ${id}:${points.map((p) => p.t).join(",")}`);
   }
-  endStroke() {
-    this.log.push("end");
+  endStroke(id: number) {
+    this.log.push(`end ${id}`);
   }
   advanceTo(t: number) {
     this.log.push(`advance ${t}`);
   }
 }
 
-const p = (t: number): Point => ({ t, x: 0.5, y: 0.5 });
+const rec = (t: number, id: number, state: TouchState): TouchRecord => ({ t, id, x: 0.5, y: 0.5, state });
 
-describe("replay", () => {
-  it("advances time, then feeds each whole stroke, then advances to the last point", () => {
+describe("Feeder", () => {
+  it("feeds every record as it arrives, one stroke per finger", () => {
     const spy = new Spy();
-    const strokes: Stroke[] = [
-      { id: 1, points: [p(5), p(9)] },
-      { id: 2, points: [p(7)] },
-    ];
-    replay(strokes, [spy]);
-    expect(spy.log).toEqual(["advance 5", "begin 5", "add 2", "end", "advance 7", "begin 7", "add 1", "end", "advance 9"]);
+    const feeder = new Feeder(() => [spy]);
+    for (const r of [rec(1, 1, "down"), rec(2, 2, "down"), rec(3, 1, "move"), rec(4, 2, "up")]) feeder.push(r);
+    expect(spy.log).toEqual([
+      "advance 1", "begin 1@1", "add 1:1",
+      "advance 2", "begin 2@2", "add 2:2",
+      "advance 3", "add 1:3",
+      "advance 4", "add 2:4", "end 2",
+    ]);
   });
 
-  it("does nothing for no strokes", () => {
+  it("starts a stroke on a move with no down and ignores an up with no stroke", () => {
     const spy = new Spy();
-    replay([], [spy]);
-    expect(spy.log).toEqual([]);
+    const feeder = new Feeder(() => [spy]);
+    feeder.push(rec(1, 7, "up"));
+    feeder.push(rec(2, 7, "move"));
+    expect(spy.log).toEqual(["advance 1", "advance 2", "begin 7@2", "add 7:2"]);
+  });
+
+  it("closes the old stroke when the same finger goes down again", () => {
+    const spy = new Spy();
+    const feeder = new Feeder(() => [spy]);
+    feeder.push(rec(1, 1, "down"));
+    feeder.push(rec(2, 1, "down"));
+    expect(spy.log.slice(3)).toEqual(["advance 2", "end 1", "begin 1@2", "add 1:2"]);
   });
 });
 
