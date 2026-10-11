@@ -1,1 +1,7 @@
 .DS_Store
+node_modules/
+dist/
+target/
+.claude/
+prototypes/data/*.jsonl
+!prototypes/data/sample.jsonl
