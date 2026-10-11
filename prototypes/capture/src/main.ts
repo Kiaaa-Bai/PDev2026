@@ -15,11 +15,14 @@ const heat = new Uint32Array(COLS * ROWS);
 const fingers = new Map<number, { x: number; y: number }>();
 let total = 0;
 let maxHeat = 1;
+// The window stays open all day; only repaint after something changed.
+let dirty = true;
 
 function fit() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(canvas.clientWidth * dpr);
   canvas.height = Math.round(canvas.clientHeight * dpr);
+  dirty = true;
 }
 
 function addHeat(x: number, y: number) {
@@ -32,6 +35,9 @@ function addHeat(x: number, y: number) {
 }
 
 function draw() {
+  requestAnimationFrame(draw);
+  if (!dirty) return;
+  dirty = false;
   const w = canvas.width;
   const h = canvas.height;
   const dpr = window.devicePixelRatio || 1;
@@ -53,7 +59,6 @@ function draw() {
     ctx.fill();
   }
   countEl.textContent = total.toLocaleString();
-  requestAnimationFrame(draw);
 }
 
 async function main() {
@@ -67,6 +72,7 @@ async function main() {
     if (v > maxHeat) maxHeat = v;
   });
   await listen<TouchRecord[]>("touches", (event) => {
+    dirty = true;
     for (const r of event.payload) {
       if (r.state === "up") {
         fingers.delete(r.id);
