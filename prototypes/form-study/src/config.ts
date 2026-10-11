@@ -1,4 +1,5 @@
 import type { CityConfig } from "./sims/city";
+import type { FarmConfig } from "./sims/farm";
 
 export const CITY: CityConfig = {
   cols: 32,
@@ -9,3 +10,5 @@ export const CITY: CityConfig = {
   tierThresholds: [3, 10, 25],
   seed: 42,
 };
+
+export const FARM: FarmConfig = { cols: 16, rows: 10, waterPerStage: 3 };
