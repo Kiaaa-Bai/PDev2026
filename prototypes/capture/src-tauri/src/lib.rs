@@ -4,6 +4,7 @@ pub mod multitouch;
 pub mod record;
 mod sampler;
 mod store;
+mod wake;
 
 use tauri::{Emitter, Manager};
 

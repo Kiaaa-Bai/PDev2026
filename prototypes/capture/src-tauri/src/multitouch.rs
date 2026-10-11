@@ -41,8 +41,8 @@ pub struct MTTouch {
 
 use crate::record::Contact;
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, OnceLock};
 
 const FRAMEWORK: &CStr =
     c"/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport";
@@ -54,6 +54,7 @@ type ContactCallback =
 type CreateDefaultFn = unsafe extern "C" fn() -> MTDeviceRef;
 type RegisterFn = unsafe extern "C" fn(MTDeviceRef, ContactCallback);
 type StartFn = unsafe extern "C" fn(MTDeviceRef, c_int) -> c_int;
+type StopFn = unsafe extern "C" fn(MTDeviceRef) -> c_int;
 
 unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
@@ -99,6 +100,53 @@ unsafe fn symbol(lib: *mut c_void, name: &CStr) -> Result<*mut c_void, String> {
     }
 }
 
+struct Api {
+    create: CreateDefaultFn,
+    register: RegisterFn,
+    start: StartFn,
+    stop: StopFn,
+}
+
+static API: OnceLock<Api> = OnceLock::new();
+
+/// The device currently sending frames, kept as an address (raw pointers are not Send).
+static DEVICE: Mutex<usize> = Mutex::new(0);
+
+fn api() -> Result<&'static Api, String> {
+    if let Some(api) = API.get() {
+        return Ok(api);
+    }
+    let loaded = unsafe {
+        let lib = dlopen(FRAMEWORK.as_ptr(), RTLD_NOW);
+        if lib.is_null() {
+            return Err("could not load MultitouchSupport.framework".into());
+        }
+        Api {
+            create: std::mem::transmute(symbol(lib, c"MTDeviceCreateDefault")?),
+            register: std::mem::transmute(symbol(lib, c"MTRegisterContactFrameCallback")?),
+            start: std::mem::transmute(symbol(lib, c"MTDeviceStart")?),
+            stop: std::mem::transmute(symbol(lib, c"MTDeviceStop")?),
+        }
+    };
+    Ok(API.get_or_init(|| loaded))
+}
+
+fn open_device(api: &Api) -> Result<(), String> {
+    unsafe {
+        let device = (api.create)();
+        if device.is_null() {
+            return Err("no multitouch device found".into());
+        }
+        (api.register)(device, on_frame);
+        let status = (api.start)(device, 0);
+        if status != 0 {
+            return Err(format!("MTDeviceStart failed with status {status}"));
+        }
+        *DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = device as usize;
+    }
+    Ok(())
+}
+
 /// Starts the default multitouch device. Each frame arrives on the returned
 /// channel as the contacts in that frame (possibly none). Call once per process.
 pub fn start() -> Result<Receiver<Vec<Contact>>, String> {
@@ -106,27 +154,19 @@ pub fn start() -> Result<Receiver<Vec<Contact>>, String> {
     FRAMES
         .set(tx)
         .map_err(|_| "multitouch capture already started".to_string())?;
-    unsafe {
-        let lib = dlopen(FRAMEWORK.as_ptr(), RTLD_NOW);
-        if lib.is_null() {
-            return Err("could not load MultitouchSupport.framework".into());
-        }
-        let create: CreateDefaultFn =
-            std::mem::transmute(symbol(lib, c"MTDeviceCreateDefault")?);
-        let register: RegisterFn =
-            std::mem::transmute(symbol(lib, c"MTRegisterContactFrameCallback")?);
-        let start_device: StartFn = std::mem::transmute(symbol(lib, c"MTDeviceStart")?);
-        let device = create();
-        if device.is_null() {
-            return Err("no multitouch device found".into());
-        }
-        register(device, on_frame);
-        let status = start_device(device, 0);
-        if status != 0 {
-            return Err(format!("MTDeviceStart failed with status {status}"));
-        }
-    }
+    open_device(api()?)?;
     Ok(rx)
+}
+
+/// After the Mac sleeps, the open device stops sending frames. Stop it and
+/// open a fresh one; frames keep arriving on the channel `start` returned.
+pub fn restart() -> Result<(), String> {
+    let api = api()?;
+    let old = std::mem::replace(&mut *DEVICE.lock().unwrap_or_else(|e| e.into_inner()), 0);
+    if old != 0 {
+        unsafe { (api.stop)(old as MTDeviceRef) };
+    }
+    open_device(api)
 }
 
 #[cfg(test)]

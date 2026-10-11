@@ -4,7 +4,7 @@
 use crate::record::TouchRecord;
 use crate::sampler::Sampler;
 use crate::store::{self, DailyWriter};
-use crate::{cursor, multitouch};
+use crate::{cursor, multitouch, wake};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> u64 {
@@ -20,7 +20,15 @@ where
     F: Fn(&[TouchRecord]) + Send + 'static,
 {
     let (rx, source) = match multitouch::start() {
-        Ok(rx) => (rx, "trackpad"),
+        Ok(rx) => {
+            wake::watch(|| {
+                eprintln!("Mac woke from sleep; reopening the trackpad");
+                if let Err(e) = multitouch::restart() {
+                    eprintln!("could not reopen the trackpad: {e}");
+                }
+            });
+            (rx, "trackpad")
+        }
         Err(e) => {
             eprintln!("multitouch unavailable ({e}); falling back to the cursor");
             (cursor::start()?, "cursor")
