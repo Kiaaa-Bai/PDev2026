@@ -2,7 +2,7 @@ import "./style.css";
 import type { Container } from "pixi.js";
 import { CITY, FARM, MONSTER, MONSTER_LIVE_SPAWN_MS } from "./config";
 import { parseJsonl, toStrokes } from "./data";
-import { attachLive, replay } from "./drive";
+import { attachLive, inputSims, replay } from "./drive";
 import { CityView } from "./render/city";
 import { FarmView } from "./render/farm";
 import { MonsterView } from "./render/monster";
@@ -47,7 +47,7 @@ async function boot() {
   let world = makeWorld("live", panels);
   attachLive(
     panels.map((p) => p.canvas),
-    () => world.sims,
+    () => inputSims(world.mode, world.sims),
   );
 
   function swap(next: World) {
@@ -64,7 +64,7 @@ async function boot() {
     swap(makeWorld("file", panels));
     replay(strokes, world.sims);
     world.monster.poofs.length = 0;
-    statusEl.textContent = `${name}: ${strokes.length.toLocaleString()} strokes`;
+    statusEl.textContent = `${name}: ${strokes.length.toLocaleString()} strokes · Reset to draw`;
   }
 
   document.querySelector("#reset")!.addEventListener("click", () => {

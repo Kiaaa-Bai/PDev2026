@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Point, Stroke } from "../src/data";
-import { replay } from "../src/drive";
+import { inputSims, replay } from "../src/drive";
 import type { Sim } from "../src/sims/types";
 
 class Spy implements Sim {
@@ -36,5 +36,13 @@ describe("replay", () => {
     const spy = new Spy();
     replay([], [spy]);
     expect(spy.log).toEqual([]);
+  });
+});
+
+describe("inputSims", () => {
+  it("lets the mouse drive sims only in live mode", () => {
+    const sims = [new Spy()];
+    expect(inputSims("live", sims)).toBe(sims);
+    expect(inputSims("file", sims)).toEqual([]);
   });
 });

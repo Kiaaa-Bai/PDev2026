@@ -18,6 +18,11 @@ export function replay(strokes: Stroke[], sims: Sim[]): void {
   for (const sim of sims) sim.advanceTo(end);
 }
 
+/** A loaded day runs on the recording's clock; mouse strokes would jump it to now. */
+export function inputSims(mode: "live" | "file", sims: Sim[]): Sim[] {
+  return mode === "live" ? sims : [];
+}
+
 function toPoint(e: PointerEvent, el: HTMLElement, t: number): Point {
   const rect = el.getBoundingClientRect();
   const clamp = (v: number) => Math.min(1, Math.max(0, v));
