@@ -1,3 +1,5 @@
+mod capture;
+mod cursor;
 pub mod multitouch;
 pub mod record;
 
