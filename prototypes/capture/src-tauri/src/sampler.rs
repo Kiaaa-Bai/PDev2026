@@ -5,6 +5,9 @@
 use crate::record::{map_state, Contact, Phase, TouchRecord, TouchState};
 use std::collections::{HashMap, HashSet};
 
+/// Inside one touch, real frames never pause this long (largest seen: ~200 ms).
+const NEW_TOUCH_GAP_MS: u64 = 1000;
+
 struct Track {
     last_written_t: u64,
     last_seen_t: u64,
@@ -31,6 +34,22 @@ impl Sampler {
             match phase {
                 Phase::Down | Phase::Move => {
                     seen.insert(c.id);
+                    // The framework reuses ids. If frames stopped and this id comes back
+                    // much later, it is a new touch: lift the old one where it was last seen.
+                    let stale = self
+                        .active
+                        .get(&c.id)
+                        .is_some_and(|t| now_ms.saturating_sub(t.last_seen_t) >= NEW_TOUCH_GAP_MS);
+                    if stale {
+                        let old = self.active.remove(&c.id).expect("checked above");
+                        out.push(TouchRecord {
+                            t: old.last_seen_t,
+                            id: c.id,
+                            x: old.x,
+                            y: old.y,
+                            state: TouchState::Up,
+                        });
+                    }
                     match self.active.get_mut(&c.id) {
                         None => {
                             self.active.insert(
@@ -158,6 +177,24 @@ mod tests {
         let mut s = Sampler::new(33);
         s.process(1000, &[c(0, 3, 0.5, 0.5)]);
         assert_eq!(s.process(1300, &[]), vec![rec(1000, 0, 0.5, 0.5, TouchState::Up)]);
+    }
+
+    #[test]
+    fn a_reused_id_after_a_long_gap_closes_the_old_stroke_first() {
+        let mut s = Sampler::new(33);
+        s.process(1000, &[c(1, 3, 0.1, 0.5)]);
+        s.process(1020, &[c(1, 4, 0.2, 0.5)]);
+        assert_eq!(
+            s.process(9000, &[c(1, 3, 0.9, 0.9)]),
+            vec![rec(1020, 1, 0.2, 0.5, TouchState::Up), rec(9000, 1, 0.9, 0.1, TouchState::Down)]
+        );
+    }
+
+    #[test]
+    fn repeated_make_touch_frames_do_not_split_a_stroke() {
+        let mut s = Sampler::new(33);
+        s.process(1000, &[c(1, 3, 0.1, 0.5)]);
+        assert!(s.process(1010, &[c(1, 3, 0.1, 0.5)]).is_empty());
     }
 
     #[test]
