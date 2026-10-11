@@ -1,0 +1,48 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #111;
+  color: #888;
+  font: 11px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+  user-select: none;
+}
+
+#tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 6px;
+  background: #181818;
+}
+
+#tabs button {
+  font: inherit;
+  color: #888;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 8px;
+}
+
+#tabs button.on {
+  color: #eee;
+  background: #2a2a2a;
+}
+
+#stage canvas {
+  display: block;
+  width: 512px;
+  height: 320px;
+  image-rendering: pixelated;
+}
+
+#hud {
+  position: fixed;
+  left: 8px;
+  bottom: 6px;
+  pointer-events: none;
+  text-shadow: 0 0 3px #000;
+}

@@ -4,20 +4,21 @@
   "version": "0.1.0",
   "identifier": "edu.nyu.kiabai.trackpad",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "pnpm --dir ../form-study dev",
+    "devUrl": "http://localhost:5174",
+    "beforeBuildCommand": "pnpm --dir ../form-study exec vite build",
+    "frontendDist": "../../form-study/dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "title": "Trackpad",
-        "width": 320,
-        "height": 200,
+        "width": 512,
+        "height": 348,
         "resizable": false,
-        "alwaysOnTop": true
+        "alwaysOnTop": true,
+        "url": "window.html"
       }
     ],
     "security": {

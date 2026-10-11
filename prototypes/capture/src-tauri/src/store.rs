@@ -1,6 +1,6 @@
 //! One append-only .jsonl file per local day in prototypes/data/.
 
-use crate::record::{TouchRecord, TouchState};
+use crate::record::TouchRecord;
 use chrono::{Local, NaiveDate};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -43,32 +43,19 @@ impl DailyWriter {
     }
 }
 
-pub fn heat_from_lines(text: &str, cols: usize, rows: usize) -> Vec<u32> {
-    let mut heat = vec![0u32; cols * rows];
-    if cols == 0 || rows == 0 {
-        return heat;
-    }
-    for line in text.lines() {
-        let Ok(r) = serde_json::from_str::<TouchRecord>(line) else { continue };
-        if r.state == TouchState::Up {
-            continue;
-        }
-        let c = ((r.x * cols as f64) as usize).min(cols - 1);
-        let row = ((r.y * rows as f64) as usize).min(rows - 1);
-        heat[row * cols + c] += 1;
-    }
-    heat
+/// That day's records as raw .jsonl text; empty if nothing was recorded.
+pub fn text_for(dir: &Path, date: NaiveDate) -> String {
+    std::fs::read_to_string(dir.join(file_name_for(date))).unwrap_or_default()
 }
 
-pub fn today_heat(dir: &Path, cols: usize, rows: usize) -> Vec<u32> {
-    let path = dir.join(file_name_for(Local::now().date_naive()));
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    heat_from_lines(&text, cols, rows)
+pub fn today_text(dir: &Path) -> String {
+    text_for(dir, Local::now().date_naive())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::TouchState;
     use std::fs;
     use tempfile::tempdir;
 
@@ -108,13 +95,11 @@ mod tests {
     }
 
     #[test]
-    fn heat_counts_downs_and_moves_and_skips_ups_and_broken_lines() {
-        let text = concat!(
-            r#"{"t":1,"id":1,"x":0.0,"y":0.0,"state":"down"}"#, "\n",
-            r#"{"t":2,"id":1,"x":1.0,"y":1.0,"state":"move"}"#, "\n",
-            r#"{"t":3,"id":1,"x":1.0,"y":1.0,"state":"up"}"#, "\n",
-            r#"{"t":4,"id":1,"x":0.5,"#, "\n",
-        );
-        assert_eq!(heat_from_lines(text, 2, 2), vec![1, 0, 0, 1]);
+    fn text_for_reads_that_days_file_or_returns_empty() {
+        let dir = tempdir().unwrap();
+        assert_eq!(text_for(dir.path(), day(11)), "");
+        DailyWriter::new(dir.path().to_path_buf()).write(day(11), &[rec(1)]).unwrap();
+        assert!(text_for(dir.path(), day(11)).starts_with(r#"{"t":1,"#));
+        assert_eq!(text_for(dir.path(), day(12)), "");
     }
 }

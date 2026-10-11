@@ -10,10 +10,11 @@ use tauri::{Emitter, Manager};
 
 struct CaptureSource(&'static str);
 
+/// Today's records as raw .jsonl text, so the window can regrow today's forms.
 /// async so reading a large day file stays off the main thread.
 #[tauri::command]
-async fn today_heat(cols: usize, rows: usize) -> Vec<u32> {
-    store::today_heat(&store::data_dir(), cols, rows)
+async fn today_text() -> String {
+    store::today_text(&store::data_dir())
 }
 
 #[tauri::command]
@@ -25,7 +26,7 @@ fn capture_source(source: tauri::State<'_, CaptureSource>) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![today_heat, capture_source])
+        .invoke_handler(tauri::generate_handler![today_text, capture_source])
         .setup(|app| {
             let handle = app.handle().clone();
             let source = capture::start(move |records| {
