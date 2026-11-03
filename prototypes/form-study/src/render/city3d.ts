@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { cellKey, type CitySim } from "../sims/city";
+import { COLORMAPS, colormapRedirect, kitOf, shareOne } from "./colormaps";
 import { AMBIENT_DAY, sameSky, SKY_DAY, skyAt, type SkyState, SUN_COLOUR_DAY, SUN_DAY, WINDOW_LIT } from "./looks";
 import { type NightUniform, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
 import {
@@ -30,12 +31,27 @@ interface Model {
   map: THREE.Texture | null;
 }
 
-async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
+/** What a kit's models share: a loader that finds the kit's palette picture, and the one texture made from it. */
+interface Kit {
+  loader: GLTFLoader;
+  map: THREE.Texture | null;
+}
+
+/** A kit's loader sends each GLB's reference to `colormap.png` to the picture the bundler shipped for that kit. */
+function makeKit(name: string): Kit {
+  const url = COLORMAPS[name];
+  if (!url) throw new Error(`no palette picture for the ${name} models`);
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier(colormapRedirect(url));
+  return { loader: new GLTFLoader(manager), map: null };
+}
+
+async function loadModel(kit: Kit, path: string): Promise<Model> {
   const url = urls[`../assets/kenney/${path}.glb`];
   if (!url) throw new Error(`missing model ${path}`);
   let gltf;
   try {
-    gltf = await loader.loadAsync(url);
+    gltf = await kit.loader.loadAsync(url);
   } catch (e) {
     throw new Error(`could not load model ${path}: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -55,7 +71,11 @@ async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
   if (parts.length === 0) throw new Error(`model ${path} has no meshes`);
   const geo = mergeGeometries(parts);
   if (!geo) throw new Error(`model ${path} could not be merged into one geometry`);
-  if (map) (map as THREE.Texture).colorSpace = THREE.SRGBColorSpace;
+  if (map) {
+    (map as THREE.Texture).colorSpace = THREE.SRGBColorSpace;
+    // every model of a kit reads the same picture: keep one texture for the kit, not one per model
+    map = shareOne(kit, map as THREE.Texture);
+  }
   return { geo, mat: new THREE.MeshLambertMaterial({ map }), map };
 }
 
@@ -168,8 +188,14 @@ export class CityView3D {
 
   /** Loads every model; call once before the first update. */
   async load(): Promise<void> {
-    const loader = new GLTFLoader();
-    await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(loader, n))));
+    const kits = new Map<string, Kit>();
+    const kitFor = (model: string): Kit => {
+      const name = kitOf(model);
+      let kit = kits.get(name);
+      if (!kit) kits.set(name, (kit = makeKit(name)));
+      return kit;
+    };
+    await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(kitFor(n), n))));
     this.patchMaterials();
     const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
