@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "make-test-city": "node --experimental-strip-types scripts/make-test-city.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",

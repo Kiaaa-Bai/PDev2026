@@ -18,6 +18,19 @@ struct CaptureSource(&'static str);
 /// the day files and the city snapshot live here, so every install starts from empty land.
 struct DataDir(PathBuf);
 
+/// The environment variable that points the app at another data folder, so a test run can
+/// use a generated city and never touch the one this Mac's own window uses.
+const DATA_DIR_ENV: &str = "TRACKPAD_DATA_DIR";
+
+/// The folder the day files and the snapshot live in: the override when one is set (an empty one
+/// counts as not set), else this Mac's app data folder.
+fn resolve_data_dir(env: Option<String>, app_dir: PathBuf) -> PathBuf {
+    match env {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => app_dir,
+    }
+}
+
 /// Today's records as raw .jsonl text, so the window can regrow today's forms.
 /// async so reading a large day file stays off the main thread.
 #[tauri::command]
@@ -72,7 +85,14 @@ pub fn run() {
         ])
         .setup(|app| {
             // First launch on a machine: the folder does not exist yet, and the city starts empty.
-            let dir = app.path().app_data_dir()?;
+            // (var_os, not var: a path that is not valid UTF-8 must still count as an override,
+            // never fall back to the real folder.)
+            let env = std::env::var_os(DATA_DIR_ENV).map(|v| v.to_string_lossy().into_owned());
+            let app_dir = app.path().app_data_dir()?;
+            let dir = resolve_data_dir(env, app_dir.clone());
+            if dir != app_dir {
+                eprintln!("{DATA_DIR_ENV} set: using {}", dir.display());
+            }
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 eprintln!("could not create {}: {e}", dir.display());
             }
@@ -90,4 +110,27 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_override_wins_over_the_app_data_folder() {
+        let app = PathBuf::from("/Users/someone/Library/Application Support/app");
+        assert_eq!(resolve_data_dir(Some("/tmp/x".into()), app), PathBuf::from("/tmp/x"));
+    }
+
+    #[test]
+    fn without_an_override_the_app_data_folder_is_used() {
+        let app = PathBuf::from("/Users/someone/Library/Application Support/app");
+        assert_eq!(resolve_data_dir(None, app.clone()), app);
+    }
+
+    #[test]
+    fn an_empty_override_counts_as_none() {
+        let app = PathBuf::from("/Users/someone/Library/Application Support/app");
+        assert_eq!(resolve_data_dir(Some(String::new()), app.clone()), app);
+    }
 }
