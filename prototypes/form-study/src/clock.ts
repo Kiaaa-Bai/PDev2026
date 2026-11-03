@@ -27,3 +27,13 @@ export function skyTime(hour: number | null, replayed: number | null, now: Date 
   }
   return replayed !== null ? new Date(replayed) : now;
 }
+
+/**
+ * The clock the people and cars follow: with an `hour` (the dev override) it starts there today and runs on as time
+ * passes, so traffic moves on the page; without, it is `now` itself.
+ */
+export function runningClock(hour: number | null, now: () => Date = () => new Date()): () => Date {
+  if (hour === null) return now;
+  const offset = skyTime(hour, null, now()).getTime() - now().getTime();
+  return () => new Date(now().getTime() + offset);
+}

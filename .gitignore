@@ -6,3 +6,4 @@ target/
 prototypes/data/*.jsonl
 !prototypes/data/sample.jsonl
 prototypes/data/city-snapshot.json*
+prototypes/data/test-city/

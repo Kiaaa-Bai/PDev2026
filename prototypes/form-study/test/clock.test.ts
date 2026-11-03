@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fastForward, hourParam, skyTime } from "../src/clock";
+import { fastForward, hourParam, runningClock, skyTime } from "../src/clock";
 
 describe("hourParam", () => {
   it("reads ?hour= as hours, with fractions", () => {
@@ -52,5 +52,23 @@ describe("fastForward", () => {
   it("starts the day over instead of running past it", () => {
     expect(fastForward(12_000)).toBe(0);
     expect(fastForward(13_000)).toBe(2 * HOUR);
+  });
+});
+
+describe("runningClock", () => {
+  it("is the plain clock when there is no hour to show", () => {
+    let wall = new Date(2026, 10, 3, 13, 40, 12);
+    const clock = runningClock(null, () => wall);
+    expect(clock()).toEqual(wall);
+    wall = new Date(2026, 10, 3, 13, 41, 0);
+    expect(clock()).toEqual(wall);
+  });
+
+  it("starts at the hour asked for today and runs on from there as the real clock does", () => {
+    let wall = new Date(2026, 10, 3, 17, 7, 30);
+    const clock = runningClock(8.25, () => wall);
+    expect(clock()).toEqual(new Date(2026, 10, 3, 8, 15, 0));
+    wall = new Date(2026, 10, 3, 17, 7, 42);
+    expect(clock()).toEqual(new Date(2026, 10, 3, 8, 15, 12)); // twelve seconds later
   });
 });

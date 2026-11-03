@@ -276,6 +276,9 @@ export function easeHalfHeight(from: number, elapsedMs: number): number {
   return MIN_HALF_HEIGHT + (from - MIN_HALF_HEIGHT) * left;
 }
 
+/** The cars on the streets, from the Car Kit: each trip's car is picked from them by who drives it. */
+export const CAR_POOL: readonly string[] = ["sedan", "taxi", "van", "suv", "hatchback-sports", "delivery", "truck"].map((n) => `car/${n}`);
+
 /** Every model the city draws, by path under assets/kenney (no extension). */
 export const MODEL_NAMES: readonly string[] = [
   ...ROAD_BASE.map(([name]) => name),
@@ -288,6 +291,7 @@ export const MODEL_NAMES: readonly string[] = [
   PARK_PLANTER,
   GARDEN_TREE,
   ROLLER.model,
+  ...CAR_POOL,
 ];
 
 /** One model on one cell (or, for a streetlight, a point inside it). */

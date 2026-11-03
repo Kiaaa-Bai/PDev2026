@@ -81,7 +81,7 @@ async function boot() {
   // Holding T fast-forwards the sky through a day (a preview; the city itself keeps the real time).
   let heldSince: number | null = null;
   const skyClock = () => new Date(Date.now() + (heldSince === null ? 0 : fastForward(performance.now() - heldSince)));
-  const cityView = new CityView3D(city, PANEL_W, PANEL_H, skyClock);
+  const cityView = new CityView3D(city, PANEL_W, PANEL_H, skyClock, () => new Date());
   await cityView.load();
   cityView.attachZoom();
   const heatView = new HeatView(heat, fingers);

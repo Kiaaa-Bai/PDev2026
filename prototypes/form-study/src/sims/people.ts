@@ -116,7 +116,7 @@ const mix = (h: number, v: number): number => {
 const mixNum = (h: number, v: number): number => mix(mix(h, v >>> 0), Math.trunc(v / 4294967296) | 0);
 
 /** A number in [0, 1) that is a fixed function of the seed and up to three whole numbers. */
-function unit(seed: number, a: number, b = 0, c = 0): number {
+export function unit(seed: number, a: number, b = 0, c = 0): number {
   let h = mixNum(0x2545f491, seed);
   h = mixNum(h, a);
   h = mixNum(h, b);

@@ -5,6 +5,7 @@ import { cellKey, type CitySim } from "../sims/city";
 import { COLORMAPS, colormapRedirect, kitOf, shareOne } from "./colormaps";
 import { AMBIENT_DAY, sameSky, SKY_DAY, skyAt, type SkyState, SUN_COLOUR_DAY, SUN_DAY, WINDOW_LIT } from "./looks";
 import { type NightUniform, patchAsphalt, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
+import { Traffic, trafficRadius } from "./traffic";
 import {
   clampHalfHeight,
   easeHalfHeight,
@@ -84,7 +85,10 @@ const DEFAULT_HALF_HEIGHT = MIN_HALF_HEIGHT;
 /** A zoomed-out view stays out this long after the last zoom input, then eases back. */
 const ZOOM_HOLD_MS = 5000;
 const PIXEL_RATIO = 2;
+/** The roller, the zoom and the sky draw up to this often... */
 const MAX_FPS = 30;
+/** ... but when only the traffic moves (people and cars, which are small and slow) 15 frames a second is enough. */
+const TRAFFIC_FPS = 15;
 /** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
 const ELEVATION = Math.PI / 6;
 const CAMERA_DISTANCE = 50;
@@ -127,6 +131,8 @@ export class CityView3D {
   private glow: THREE.InstancedMesh;
   private glowMaterial: THREE.MeshBasicMaterial;
   private glowFacing = new THREE.Quaternion();
+  /** The people and cars on the streets; made once the models are loaded. */
+  private traffic!: Traffic;
   /** How lit the windows are, shared by every model's material. */
   private night: NightUniform = { value: 0 };
   /** The sky last put on the lights, the clock and the windows, and the minute it was looked up in. */
@@ -146,13 +152,20 @@ export class CityView3D {
   private lastMove = "";
   private stale = true;
   private lastRender = -Infinity;
+  /** When the traffic was last asked, so that with nothing drawn it is looked at TRAFFIC_FPS times a second, not on every frame. */
+  private lastTraffic = -Infinity;
 
-  /** `clock` tells the time of day the sky follows; it is a parameter so a test or the dev page can show another hour. */
+  /**
+   * `clock` tells the time of day the sky follows; it is a parameter so a test or the dev page can show another hour.
+   * `trafficClock` tells the time the people and cars follow (their day is the real one: the fast-forward that
+   * previews the sky does not move them); it is the sky's clock unless given.
+   */
   constructor(
     private sim: CitySim,
     private width: number,
     private height: number,
     private clock: () => Date = () => new Date(),
+    private trafficClock: () => Date = clock,
   ) {
     // Lambert shading, no shadows, no antialiasing: the cheapest picture that still reads as 3D.
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
@@ -201,6 +214,7 @@ export class CityView3D {
     this.roller = new THREE.Mesh(r.geo, r.mat);
     this.roller.scale.setScalar(ROLLER.scale);
     this.scene.add(this.roller);
+    this.traffic = new Traffic(this.scene, this.models);
     this.invalidate();
   }
 
@@ -349,9 +363,16 @@ export class CityView3D {
     this.stale = true;
   }
 
+  /** What the traffic's last pass found, for a look from the dev page's console. */
+  trafficInfo(): ReturnType<Traffic["info"]> {
+    return this.traffic ? this.traffic.info() : null;
+  }
+
   stat(): string {
     const parked = this.sim.parked() ? " · parked" : "";
-    return `${this.sim.road.size.toLocaleString()} road tiles · ${this.sim.houses(this.sim.time()).toLocaleString()} houses${parked}`;
+    const { cars, people } = this.traffic ? this.traffic.drawn() : { cars: 0, people: 0 };
+    const out = cars + people > 0 ? ` · ${people} people · ${cars} cars` : "";
+    return `${this.sim.road.size.toLocaleString()} road tiles · ${this.sim.houses(this.sim.time()).toLocaleString()} houses${out}${parked}`;
   }
 
   /**
@@ -410,7 +431,10 @@ export class CityView3D {
     return true;
   }
 
-  /** Draw if something changed, at most MAX_FPS times a second. Returns true when it drew. */
+  /**
+   * Draw if something changed, at most MAX_FPS times a second, and when only the traffic moved at most TRAFFIC_FPS.
+   * A parked city with nobody out is not drawn at all. Returns true when it drew.
+   */
   update(now: number): boolean {
     if (!this.roller || now - this.lastRender < 1000 / MAX_FPS) return false;
     const t = this.sim.time();
@@ -430,6 +454,12 @@ export class CityView3D {
     if (cellSig !== this.builtFor) {
       this.builtFor = cellSig;
       if (this.rebuild(t, radius)) changed = true;
+    }
+    // The traffic is asked when a frame is due anyway, or when its own slower slot has come; it reports whether
+    // anybody moved or came or went. Its heavy work is in tasks of its own: this only draws what they found.
+    if (changed || now - this.lastTraffic >= 1000 / TRAFFIC_FPS) {
+      this.lastTraffic = now;
+      if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
     }
     if (!changed) return false;
     this.stale = false;
