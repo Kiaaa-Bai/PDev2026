@@ -8,7 +8,8 @@ pub enum TouchState {
     Up,
 }
 
-/// One line of the daily .jsonl file. x and y are 0–1 with the origin at the top-left.
+/// One line of the daily .jsonl file. x and y are global screen points (the
+/// pointer; origin top-left of the main display) or 0–1 (trackpad; origin top-left).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TouchRecord {
     pub t: u64,
