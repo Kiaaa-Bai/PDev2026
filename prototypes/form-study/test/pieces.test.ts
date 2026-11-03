@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   BLOCK_POOL,
   buildingPlacements,
+  clampHalfHeight,
   COMMERCIAL_FOOTPRINT,
   COMMERCIAL_SCALE,
   commercialScale,
+  EASE_BACK_MS,
+  easeHalfHeight,
   GARDEN_TREE,
   houseTurns,
   housePiece,
@@ -16,6 +19,8 @@ import {
   layoutCells,
   layoutKey,
   LIGHT_SCALE,
+  MAX_HALF_HEIGHT,
+  MIN_HALF_HEIGHT,
   MODEL_NAMES,
   PARK_PLANTER,
   PARK_TREE,
@@ -24,6 +29,8 @@ import {
   ROLLER,
   rotMask,
   SHOP_POOL,
+  viewRadius,
+  wheelZoom,
   type Placement,
   type Turns,
 } from "../src/render/pieces";
@@ -613,5 +620,92 @@ describe("lampHead", () => {
       expect(head.x).toBeCloseTo(10 + arm[turns][0] * reach);
       expect(head.z).toBeCloseTo(20 + arm[turns][1] * reach);
     }
+  });
+});
+
+describe("zoom", () => {
+  it("keeps the camera half-height between 5 and 60 tiles", () => {
+    expect(MIN_HALF_HEIGHT).toBe(5);
+    expect(MAX_HALF_HEIGHT).toBe(60);
+    expect(clampHalfHeight(1)).toBe(5);
+    expect(clampHalfHeight(-3)).toBe(5);
+    expect(clampHalfHeight(5)).toBe(5);
+    expect(clampHalfHeight(23.5)).toBe(23.5);
+    expect(clampHalfHeight(60)).toBe(60);
+    expect(clampHalfHeight(1000)).toBe(60);
+  });
+
+  it("builds ceil(halfHeight * 512/348) + 2 cells around the roller, at least 30 and at most 120", () => {
+    expect(viewRadius(5)).toBe(30); // the close-up radius it has always had
+    expect(viewRadius(15)).toBe(30); // ceil(22.07) + 2 = 25, lifted to the floor
+    expect(viewRadius(20)).toBe(32);
+    expect(viewRadius(60)).toBe(91);
+    expect(viewRadius(1000)).toBe(120);
+    expect(viewRadius(Infinity)).toBe(120);
+  });
+
+  it("builds more as the view widens, and never less than the close-up radius", () => {
+    let last = viewRadius(MIN_HALF_HEIGHT);
+    for (let h = MIN_HALF_HEIGHT; h <= MAX_HALF_HEIGHT; h += 0.5) {
+      expect(viewRadius(h)).toBeGreaterThanOrEqual(last);
+      last = viewRadius(h);
+    }
+    expect(last).toBeLessThanOrEqual(120);
+  });
+
+  describe("wheelZoom", () => {
+    it("zooms out when the wheel goes one way and in when it goes the other", () => {
+      expect(wheelZoom(10, 50, 0, false)).toBeGreaterThan(10);
+      expect(wheelZoom(10, -50, 0, false)).toBeLessThan(10);
+      expect(wheelZoom(10, 0, 0, false)).toBe(10);
+    });
+
+    it("stays between 5 and 60", () => {
+      expect(wheelZoom(5, -10_000, 0, false)).toBe(5);
+      expect(wheelZoom(40, 10_000, 0, false)).toBe(60);
+      expect(wheelZoom(40, 10_000, 0, true)).toBe(60);
+    });
+
+    it("turns the same distance each step: out and then in again comes back", () => {
+      const out = wheelZoom(10, 120, 0, false);
+      expect(wheelZoom(out, -120, 0, false)).toBeCloseTo(10);
+    });
+
+    it("moves further for a pinch than for a scroll of the same size", () => {
+      expect(wheelZoom(10, 5, 0, true) - 10).toBeGreaterThan(wheelZoom(10, 5, 0, false) - 10);
+    });
+
+    it("counts a wheel that reports lines or pages as bigger than one that reports pixels", () => {
+      const px = wheelZoom(10, 3, 0, false);
+      expect(wheelZoom(10, 3, 1, false)).toBeGreaterThan(px);
+      expect(wheelZoom(10, 3, 2, false)).toBeGreaterThan(wheelZoom(10, 3, 1, false));
+    });
+  });
+
+  describe("easeHalfHeight", () => {
+    it("starts where it was, ends at 5 after 600 ms, and stays there", () => {
+      expect(EASE_BACK_MS).toBe(600);
+      expect(easeHalfHeight(40, 0)).toBe(40);
+      expect(easeHalfHeight(40, EASE_BACK_MS)).toBe(5);
+      expect(easeHalfHeight(40, EASE_BACK_MS + 1000)).toBe(5);
+    });
+
+    it("comes in steadily, never past either end", () => {
+      let last = 40;
+      for (let ms = 0; ms <= EASE_BACK_MS; ms += 20) {
+        const h = easeHalfHeight(40, ms);
+        expect(h).toBeLessThanOrEqual(last);
+        expect(h).toBeGreaterThanOrEqual(5);
+        last = h;
+      }
+      const mid = easeHalfHeight(40, EASE_BACK_MS / 2);
+      expect(mid).toBeGreaterThan(5);
+      expect(mid).toBeLessThan(40);
+    });
+
+    it("has nowhere to go from the close-up, or from a time before it began", () => {
+      expect(easeHalfHeight(5, 100)).toBe(5);
+      expect(easeHalfHeight(40, -50)).toBe(40);
+    });
   });
 });

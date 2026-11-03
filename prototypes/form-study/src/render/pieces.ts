@@ -223,6 +223,47 @@ export function lampHead(p: Placement): { x: number; y: number; z: number } {
   return { x: p.x + dx * LAMP_HEAD.reach * p.scale, y: LAMP_HEAD.height * p.scale, z: p.y + dz * LAMP_HEAD.reach * p.scale };
 }
 
+/** The camera's half-height in tiles: 5 close up (where it rests), up to 60 zoomed out. */
+export const MIN_HALF_HEIGHT = 5;
+export const MAX_HALF_HEIGHT = 60;
+
+/** A half-height held to the zoom range. */
+export const clampHalfHeight = (h: number): number => Math.min(MAX_HALF_HEIGHT, Math.max(MIN_HALF_HEIGHT, h));
+
+/**
+ * How many cells around the roller to build for a camera `halfHeight` tiles tall: the view's width in tiles
+ * (the window is 512 wide and 348 tall), two more, never fewer than the close-up's 30 and never more than 120.
+ */
+export const viewRadius = (halfHeight: number): number => Math.min(120, Math.max(30, Math.ceil((halfHeight * 512) / 348) + 2));
+
+/** How much one unit of wheel delta scales the half-height (as the exponent of e): a pinch much more than a scroll. */
+const PINCH_RATE = 0.01;
+const SCROLL_RATE = 0.0015;
+/** A wheel that reports lines or pages instead of pixels: roughly this many pixels each. */
+const LINE_PX = 16;
+const PAGE_PX = 400;
+
+/**
+ * The half-height after one wheel event: scrolling down zooms out and up zooms in, the way a map does.
+ * A trackpad pinch arrives as a wheel event with ctrlKey held and much smaller deltas, so it is weighted up.
+ * Each step multiplies the height, so out and back in by the same amount returns to where it started.
+ */
+export function wheelZoom(halfHeight: number, deltaY: number, deltaMode: number, pinch: boolean): number {
+  const px = deltaMode === 1 ? deltaY * LINE_PX : deltaMode === 2 ? deltaY * PAGE_PX : deltaY;
+  return clampHalfHeight(halfHeight * Math.exp(px * (pinch ? PINCH_RATE : SCROLL_RATE)));
+}
+
+/** A zoomed-out view settles back to the close-up in this long. */
+export const EASE_BACK_MS = 600;
+
+/** The half-height `elapsedMs` into easing back to the close-up from `from`: fast at first, slowing to rest at 5. */
+export function easeHalfHeight(from: number, elapsedMs: number): number {
+  if (elapsedMs <= 0) return from;
+  if (elapsedMs >= EASE_BACK_MS || from <= MIN_HALF_HEIGHT) return MIN_HALF_HEIGHT;
+  const left = (1 - elapsedMs / EASE_BACK_MS) ** 3;
+  return MIN_HALF_HEIGHT + (from - MIN_HALF_HEIGHT) * left;
+}
+
 /** Every model the city draws, by path under assets/kenney (no extension). */
 export const MODEL_NAMES: readonly string[] = [
   ...ROAD_BASE.map(([name]) => name),

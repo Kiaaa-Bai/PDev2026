@@ -4,7 +4,21 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { cellKey, type CitySim } from "../sims/city";
 import { AMBIENT_DAY, sameSky, SKY_DAY, skyAt, type SkyState, SUN_COLOUR_DAY, SUN_DAY, WINDOW_LIT } from "./looks";
 import { type NightUniform, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
-import { lampHead, layoutCells, layoutKey, LIGHT, MODEL_NAMES, ROLLER, type Looks, type Placement } from "./pieces";
+import {
+  clampHalfHeight,
+  easeHalfHeight,
+  lampHead,
+  layoutCells,
+  layoutKey,
+  LIGHT,
+  MIN_HALF_HEIGHT,
+  MODEL_NAMES,
+  ROLLER,
+  viewRadius,
+  wheelZoom,
+  type Looks,
+  type Placement,
+} from "./pieces";
 
 const urls = import.meta.glob("../assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
 
@@ -45,15 +59,17 @@ async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
   return { geo, mat: new THREE.MeshLambertMaterial({ map }), map };
 }
 
-/** Cells this far from the roller (in each axis) are built; the camera sees far fewer. */
-const VIEW_RADIUS = 30;
-/** Tiles visible above and below the roller. */
-const DEFAULT_HALF_HEIGHT = 5;
+/** Tiles visible above and below the roller when close up, which is where the view rests. */
+const DEFAULT_HALF_HEIGHT = MIN_HALF_HEIGHT;
+/** A zoomed-out view stays out this long after the last zoom input, then eases back. */
+const ZOOM_HOLD_MS = 5000;
 const PIXEL_RATIO = 2;
 const MAX_FPS = 30;
 /** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
 const ELEVATION = Math.PI / 6;
 const CAMERA_DISTANCE = 50;
+/** A zoomed-out view reaches over 100 units in front of and behind the camera's depth, so the far plane is far. */
+const CAMERA_FAR = 400;
 /** A streetlight's glow at night: a soft warm disc this many tiles across, centred on the lamp. */
 const GLOW_SIZE = 1.1;
 
@@ -96,9 +112,16 @@ export class CityView3D {
   /** The sky last put on the lights, the clock and the windows, and the minute it was looked up in. */
   private sky: SkyState | null = null;
   private skyMinute = NaN;
-  /** What the instances were last built for (roller cell, city version, 5 s bucket), and a hash of what that put on screen. */
+  /** What the instances were last built for (roller cell, city version, 5 s bucket, radius), and a hash of what that put on screen. */
   private builtFor = "";
   private builtKey: number | null = null;
+  /** The radius, in cells, the instances were last built out to. */
+  private builtRadius = 0;
+  /** Tiles visible above and below the roller now; wheel or pinch changes it, and it eases back by itself. */
+  private halfHeight = DEFAULT_HALF_HEIGHT;
+  /** When the zoom was last changed by an input (the clock `update` is given), and the easing back once it has begun. */
+  private zoomedAt = -Infinity;
+  private easing: { from: number; since: number } | null = null;
   /** Where the roller was when last drawn, and whether something outside it needs a draw. */
   private lastMove = "";
   private stale = true;
@@ -116,7 +139,7 @@ export class CityView3D {
     this.renderer.setPixelRatio(PIXEL_RATIO);
     this.renderer.setSize(width, height);
     this.canvas = this.renderer.domElement;
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, CAMERA_FAR);
     this.setHalfHeight(DEFAULT_HALF_HEIGHT);
     this.hemisphere = new THREE.HemisphereLight(SKY_DAY, 0x6a8a50, AMBIENT_DAY);
     this.scene.add(this.hemisphere);
@@ -234,6 +257,7 @@ export class CityView3D {
 
   /** Tiles visible above and below the roller: smaller zooms in. */
   setHalfHeight(h: number): void {
+    this.halfHeight = h;
     const aspect = this.width / this.height;
     const c = this.camera;
     c.left = -h * aspect;
@@ -242,6 +266,54 @@ export class CityView3D {
     c.bottom = -h;
     c.updateProjectionMatrix();
     this.invalidate();
+  }
+
+  /** Zoom to `h` tiles (kept between 5 and 60) because of an input at `now`: it stays there for 5 s after the last one. */
+  zoomTo(h: number, now: number = performance.now()): void {
+    h = clampHalfHeight(h);
+    this.zoomedAt = now;
+    this.easing = null;
+    if (h !== this.halfHeight) this.setHalfHeight(h);
+  }
+
+  /**
+   * Wheel or pinch on the canvas zooms, and never scrolls or zooms the page. A trackpad pinch is a wheel
+   * event with ctrlKey in Chromium; WebKit (the Tauri window) sends gesture events instead, whose scale is
+   * the pinch's total so far.
+   */
+  attachZoom(): void {
+    const c = this.canvas;
+    c.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        this.zoomTo(wheelZoom(this.halfHeight, e.deltaY, e.deltaMode, e.ctrlKey));
+      },
+      { passive: false },
+    );
+    let from = this.halfHeight;
+    c.addEventListener("gesturestart", (e) => {
+      e.preventDefault();
+      from = this.halfHeight;
+    });
+    c.addEventListener("gesturechange", (e) => {
+      e.preventDefault();
+      const scale = (e as Event & { scale?: number }).scale;
+      if (scale && scale > 0 && Number.isFinite(scale)) this.zoomTo(from / scale);
+    });
+  }
+
+  /** Once the zoom has been left alone for 5 s, ease it back to the close-up over 600 ms. Returns true while the view is changing. */
+  private stepZoom(now: number): boolean {
+    if (this.halfHeight === DEFAULT_HALF_HEIGHT) return false;
+    if (!this.easing) {
+      if (now - this.zoomedAt < ZOOM_HOLD_MS) return false;
+      this.easing = { from: this.halfHeight, since: now };
+    }
+    const h = easeHalfHeight(this.easing.from, now - this.easing.since);
+    if (h === DEFAULT_HALF_HEIGHT) this.easing = null;
+    this.setHalfHeight(h);
+    return true;
   }
 
   /** Draw again on the next update, e.g. after the canvas was hidden. */
@@ -255,10 +327,10 @@ export class CityView3D {
   }
 
   /**
-   * Rebuild instances around the roller: only cells within VIEW_RADIUS are drawn.
+   * Rebuild instances around the roller: only cells within `radius` are drawn.
    * Returns false, touching nothing, when that is exactly what is already on screen.
    */
-  private rebuild(t: number): boolean {
+  private rebuild(t: number, radius: number): boolean {
     const at = this.sim.rollerAt();
     const has = (x: number, y: number) => this.sim.road.has(cellKey(x, y));
     const looks: Looks = {
@@ -266,7 +338,8 @@ export class CityView3D {
       built: (x, y) => this.sim.lots.get(cellKey(x, y)) ?? 0,
       kind: (x, y) => this.sim.lotKind(x, y),
     };
-    const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), VIEW_RADIUS, looks);
+    const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), radius, looks);
+    this.builtRadius = radius;
     const key = layoutKey(placed);
     if (key === this.builtKey) return false;
     this.builtKey = key;
@@ -316,21 +389,29 @@ export class CityView3D {
     const at = this.sim.rollerAt();
     const move = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir}`;
     let changed = this.stale || move !== this.lastMove;
+    if (this.stepZoom(now)) changed = true;
     if (this.updateSky()) changed = true;
-    // Check the surroundings when the roller has moved a few cells, the city changed, or every 5 s
-    // (a house can age into a bigger one). It only counts as a change if what is drawn differs.
-    const cellSig = `${Math.round(at.x / 4)},${Math.round(at.y / 4)},${this.sim.version},${Math.floor(t / 5000)}`;
+    // Zoomed out, build as far as the view needs and keep that while easing back, so the way in does not
+    // rebuild a big layout every frame; the radius drops once the view is back at the close-up.
+    const need = viewRadius(this.halfHeight);
+    const radius = this.halfHeight > DEFAULT_HALF_HEIGHT ? Math.max(need, this.builtRadius) : need;
+    // Check the surroundings when the roller has moved a few cells, the city changed, the view needs
+    // another radius, or every 5 s (a house can age into a bigger one). It only counts as a change if
+    // what is drawn differs.
+    const cellSig = `${Math.round(at.x / 4)},${Math.round(at.y / 4)},${this.sim.version},${Math.floor(t / 5000)},${radius}`;
     if (cellSig !== this.builtFor) {
       this.builtFor = cellSig;
-      if (this.rebuild(t)) changed = true;
+      if (this.rebuild(t, radius)) changed = true;
     }
     if (!changed) return false;
     this.stale = false;
     this.lastMove = move;
     this.roller.position.set(at.x, 0.02, at.y);
     this.roller.rotation.y = ROLLER.yaw[this.sim.roller.dir];
-    const flat = CAMERA_DISTANCE * Math.cos(ELEVATION) * Math.SQRT1_2;
-    this.camera.position.set(at.x + flat, CAMERA_DISTANCE * Math.sin(ELEVATION), at.y + flat);
+    // Back far enough that the near edge of a zoomed-out ground is still in front of the camera.
+    const distance = Math.max(CAMERA_DISTANCE, 2 * this.halfHeight + 10);
+    const flat = distance * Math.cos(ELEVATION) * Math.SQRT1_2;
+    this.camera.position.set(at.x + flat, distance * Math.sin(ELEVATION), at.y + flat);
     this.camera.lookAt(at.x, 0, at.y);
     this.ground.position.set(at.x, -0.01, at.y);
     this.renderer.render(this.scene, this.camera);

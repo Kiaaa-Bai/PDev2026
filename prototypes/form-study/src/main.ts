@@ -29,6 +29,7 @@ async function boot() {
   const clock = () => skyTime(hour, replayed && replayed.time() > 0 ? replayed.time() : null);
   const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H, clock);
   await view.load();
+  view.attachZoom();
   const panel = createPanel(host, "City", view.canvas);
 
   /** A fresh city on the view: live (the mouse drives it) or file (a recording drives it). */

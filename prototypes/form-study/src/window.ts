@@ -81,6 +81,7 @@ async function boot() {
   const sims: Sim[] = [city];
   const cityView = new CityView3D(city, PANEL_W, PANEL_H);
   await cityView.load();
+  cityView.attachZoom();
   const heatView = new HeatView(heat, fingers);
   app.stage.addChild(heatView.root);
   stageEl.append(cityView.canvas, heatCanvas);
