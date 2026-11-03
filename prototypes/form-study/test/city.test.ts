@@ -277,7 +277,7 @@ describe("CitySim kinds", () => {
     return sim;
   }
   /** Drives a winding path of re-driven streets, so lots come up beside corners, rows, and wide road. */
-  function wander(sim: CitySim, pushes = 160) {
+  function wander(sim: CitySim, pushes = 160, each?: () => void) {
     // the strokes add distance; hold it where it started, so what is unlocked stays as the test set it
     const held = sim.distance;
     const headings = [PUSH.E, PUSH.E, PUSH.S, PUSH.W, PUSH.W, PUSH.N, PUSH.E, PUSH.S, PUSH.S, PUSH.W, PUSH.N, PUSH.N];
@@ -286,8 +286,10 @@ describe("CitySim kinds", () => {
       t += 2500 + (i % 3) * 2000;
       swipe(sim, t, ...headings[(i * 5) % headings.length]);
       sim.distance = held;
+      each?.();
     }
     sim.advanceTo(t + 60_000);
+    each?.();
   }
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
@@ -457,15 +459,37 @@ describe("CitySim kinds", () => {
       expect([...sim.kinds.values()].filter((k) => k === "landmark")).toHaveLength(1);
     });
 
-    it("stays the only one when the roller flattens it: the flag is not given back", () => {
+    it("rises again when the roller flattens it: a later qualifying lot becomes the landmark", () => {
       const sim = startWith(unlockAt("landmark"), [[1, 1, 3]]);
       expect(sim.lotKind(1, 0)).toBe("landmark");
-      sim.advanceTo(5000); // east over (1, 0), and on: the lot at (2, 1) touches the wide road too
+      sim.advanceTo(2500); // east over (1, 0), which was the landmark's lot
       expect(sim.road.has("1,0")).toBe(true);
       expect(sim.lotKind(1, 0)).toBeUndefined();
-      expect(sim.lotKind(2, 1)).toBeDefined();
       expect([...sim.kinds.values()]).not.toContain("landmark");
+      expect(sim.landmarkPlaced).toBe(false);
+      sim.advanceTo(5000); // on to (2, 0): the lot at (2, 1) touches the wide road at (1, 1) too
+      expect(sim.lotKind(2, 1)).toBe("landmark");
       expect(sim.landmarkPlaced).toBe(true);
+      expect([...sim.kinds.values()].filter((k) => k === "landmark")).toHaveLength(1);
+    });
+
+    it("keeps the flag only while a landmark stands, so there is never more than one", () => {
+      let replaced = 0;
+      for (let seed = 1; seed <= 20; seed++) {
+        const sim = new CitySim({ ...wild, seed });
+        sim.distance = unlockAt("landmark");
+        sim.road.set("1,1", 3); // the first lot beside it, ahead of the roller, becomes the landmark and is soon flattened
+        let standingAt: string | null = null;
+        wander(sim, 160, () => {
+          const standing = [...sim.kinds.entries()].filter(([, k]) => k === "landmark").map(([cell]) => cell);
+          expect(standing.length, `seed ${seed}`).toBeLessThanOrEqual(1);
+          expect(sim.landmarkPlaced, `seed ${seed}`).toBe(standing.length === 1);
+          if (standing[0] && standingAt && standing[0] !== standingAt) replaced++; // a flattened landmark, built again elsewhere
+          standingAt = standing[0] ?? standingAt;
+        });
+      }
+      // across these drives the roller did flatten a landmark and a later lot took its place
+      expect(replaced).toBeGreaterThan(0);
     });
 
     it("leaves lots made before the unlock as they were", () => {

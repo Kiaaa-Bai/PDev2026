@@ -55,7 +55,7 @@ export class CitySim implements Sim {
   readonly lots = new Map<string, number>();
   /** The kind of building on each lot, fixed when the lot was made and never changed after. */
   readonly kinds = new Map<string, Kind>();
-  /** True once the one landmark has been placed, even if the roller has flattened it since. */
+  /** True while the one landmark stands; the roller flattening it clears this, so a later lot can be the landmark. */
   landmarkPlaced = false;
   readonly roller = { x: 0, y: 0, dir: 0 as Dir, progress: 0 };
   driven = 0;
@@ -255,6 +255,7 @@ export class CitySim implements Sim {
     const k = cellKey(x, y);
     this.road.set(k, (this.road.get(k) ?? 0) + 1);
     this.lots.delete(k);
+    if (this.kinds.get(k) === "landmark") this.landmarkPlaced = false;
     this.kinds.delete(k);
     const [lo, hi] = this.cfg.lotDelayMs;
     for (let d = 0; d < 4; d++) {
@@ -274,7 +275,8 @@ export class CitySim implements Sim {
 
   /**
    * The kind of the lot about to be made at (x, y), from what is around it and the distance now. Once it
-   * is unlocked, the first lot made beside road that was driven `wideRoadAt` times is the landmark.
+   * is unlocked, the first lot made beside road that was driven `wideRoadAt` times is the landmark; there is
+   * at most one landmark at a time, and a flattened one can be replaced by a later lot.
    */
   private kindOfNewLot(x: number, y: number, roll: number): Kind {
     if (!this.landmarkPlaced && isUnlocked("landmark", this.distance) && this.besideWideRoad(x, y)) {
