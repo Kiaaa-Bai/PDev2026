@@ -1,11 +1,12 @@
 import type { Point } from "../data";
 import { mulberry32 } from "../rng";
+import { headingFor } from "./steer";
 import type { Sim } from "./types";
 
 export interface CityConfig {
   /** Tiles per second while driving. */
   speed: number;
-  /** How far a finger must move (0–1 of the pad) before it steers. */
+  /** How far a pointer must move, in screen points, before it steers. */
   steerMin: number;
   /** The roller parks this long after the last touch. */
   idleStopMs: number;
@@ -51,6 +52,8 @@ export class CitySim implements Sim {
   readonly lots = new Map<string, number>();
   readonly roller = { x: 0, y: 0, dir: 0 as Dir, progress: 0 };
   driven = 0;
+  /** Length of the pointer's path in screen points, summed over every stroke. */
+  distance = 0;
   version = 0;
   private rand: () => number;
   private msPerCell: number;
@@ -59,6 +62,8 @@ export class CitySim implements Sim {
   private started = false;
   /** Where each finger last steered from. */
   private anchors = new Map<number, Point>();
+  /** Where each finger was at its previous point, for the distance. */
+  private lastPoints = new Map<number, Point>();
 
   constructor(readonly cfg: CityConfig) {
     this.rand = mulberry32(cfg.seed);
@@ -68,12 +73,16 @@ export class CitySim implements Sim {
   beginStroke(id: number, t: number): void {
     this.touch(t);
     this.anchors.delete(id);
+    this.lastPoints.delete(id);
   }
 
   addPoints(id: number, points: Point[]): void {
     for (const p of points) {
       this.advanceTo(p.t);
       this.touch(p.t);
+      const prev = this.lastPoints.get(id);
+      if (prev) this.distance += Math.hypot(p.x - prev.x, p.y - prev.y);
+      this.lastPoints.set(id, p);
       const from = this.anchors.get(id);
       if (!from) {
         this.anchors.set(id, p);
@@ -81,9 +90,9 @@ export class CitySim implements Sim {
       }
       const dx = p.x - from.x;
       const dy = p.y - from.y;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) < this.cfg.steerMin) continue;
+      if (Math.hypot(dx, dy) < this.cfg.steerMin) continue;
       this.anchors.set(id, p);
-      const dir: Dir = Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 0 : 2) : dy > 0 ? 1 : 3;
+      const dir = headingFor(dx, dy, this.roller.dir);
       if (dir !== this.roller.dir) {
         this.roller.dir = dir;
         this.roller.progress = 0;
@@ -94,6 +103,7 @@ export class CitySim implements Sim {
 
   endStroke(id: number): void {
     this.anchors.delete(id);
+    this.lastPoints.delete(id);
   }
 
   advanceTo(t: number): void {

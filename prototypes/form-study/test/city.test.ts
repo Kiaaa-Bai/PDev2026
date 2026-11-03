@@ -3,7 +3,7 @@ import { CitySim, roadMaskAt, type CityConfig } from "../src/sims/city";
 
 const cfg: CityConfig = {
   speed: 1,
-  steerMin: 0.03,
+  steerMin: 40,
   idleStopMs: 300_000,
   slowMs: 10_000,
   lotDelayMs: [20_000, 20_000],
@@ -15,15 +15,18 @@ const cfg: CityConfig = {
 
 let nextId = 1;
 
-/** A finger touches at t and moves by (dx, dy); (0, 0) is a plain tap. */
+/** A pointer touches at t and moves by (dx, dy) screen points; (0, 0) is a plain tap. */
 function swipe(sim: CitySim, t: number, dx = 0, dy = 0) {
   const id = nextId++;
   sim.advanceTo(t);
   sim.beginStroke(id, t);
-  sim.addPoints(id, [{ t, x: 0.5, y: 0.5 }]);
-  if (dx || dy) sim.addPoints(id, [{ t, x: 0.5 + dx, y: 0.5 + dy }]);
+  sim.addPoints(id, [{ t, x: 500, y: 500 }]);
+  if (dx || dy) sim.addPoints(id, [{ t, x: 500 + dx, y: 500 + dy }]);
   sim.endStroke(id);
 }
+
+/** Pushes that point exactly along each heading on screen: E ↘, S ↙, W ↖, N ↗. */
+const PUSH = { E: [100, 50], S: [-100, 50], W: [-100, -50], N: [100, -50] } as const;
 
 const roads = (sim: CitySim) => [...sim.road.keys()].sort();
 
@@ -47,7 +50,7 @@ describe("CitySim roller", () => {
   it("turns at once to the direction the finger moves", () => {
     const sim = new CitySim(cfg);
     swipe(sim, 1000);
-    swipe(sim, 1500, 0, -0.1); // up = north
+    swipe(sim, 1500, ...PUSH.N);
     sim.advanceTo(4500);
     expect(roads(sim)).toEqual(["0,-1", "0,-2", "0,-3", "0,0"]);
   });
@@ -55,9 +58,31 @@ describe("CitySim roller", () => {
   it("ignores finger jitter smaller than steerMin", () => {
     const sim = new CitySim(cfg);
     swipe(sim, 1000);
-    swipe(sim, 1000, 0.01, -0.02);
+    swipe(sim, 1000, 10, -20);
     sim.advanceTo(3000);
     expect(roads(sim)).toEqual(["0,0", "1,0", "2,0"]);
+  });
+
+  it("keeps its heading on a tie between diagonals and never U-turns on one", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000);
+    swipe(sim, 1000, 100, 0); // right while heading ↘: east and north tie, east is kept
+    expect(sim.roller.dir).toBe(0);
+    swipe(sim, 1000, 0, 100); // down: east and south tie, east is kept
+    expect(sim.roller.dir).toBe(0);
+    swipe(sim, 1000, 0, -100); // up: north and west tie, west is the U-turn
+    expect(sim.roller.dir).toBe(3);
+  });
+
+  it("steers from points far outside 0–1", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000, ...PUSH.S);
+    expect(sim.roller.dir).toBe(1);
+    const id = nextId++;
+    sim.beginStroke(id, 2000);
+    sim.addPoints(id, [{ t: 2000, x: 3000, y: -500 }]);
+    sim.addPoints(id, [{ t: 2000, x: 3100, y: -450 }]);
+    expect(sim.roller.dir).toBe(0);
   });
 
   it("parks five minutes after the last touch and moves again on the next", () => {
@@ -112,9 +137,14 @@ describe("CitySim roller", () => {
   const sameCityAnyFrameRate = (over: Partial<CityConfig>) => {
     const run = (step: number) => {
       const sim = new CitySim({ ...cfg, lotChance: 0.5, lotDelayMs: [20_000, 120_000], seed: 9, ...over });
-      const turns: [number, number, number][] = [[1000, 0, 0], [3200, 0, 0.1], [5700, -0.1, 0], [9100, 0, -0.1]];
+      const turns: [number, readonly [number, number]][] = [
+        [1000, [0, 0]],
+        [3200, PUSH.S],
+        [5700, PUSH.W],
+        [9100, PUSH.N],
+      ];
       let t = 0;
-      for (const [tt, dx, dy] of turns) {
+      for (const [tt, [dx, dy]] of turns) {
         for (; t < tt; t += step) sim.advanceTo(t);
         swipe(sim, tt, dx, dy);
       }
@@ -129,6 +159,53 @@ describe("CitySim roller", () => {
 
   it("grows the same city whatever the frame rate while slowing", () =>
     sameCityAnyFrameRate({ idleStopMs: 4000, slowMs: 4000 }));
+});
+
+describe("CitySim distance", () => {
+  const stroke = (sim: CitySim, id: number, t: number, pts: [number, number][]) =>
+    sim.addPoints(id, pts.map(([x, y]) => ({ t, x, y })));
+
+  it("sums pointer distance in points", () => {
+    const sim = new CitySim(cfg);
+    sim.beginStroke(1, 0);
+    stroke(sim, 1, 0, [[0, 0], [30, 40], [30, 100]]);
+    sim.endStroke(1);
+    expect(sim.distance).toBe(110);
+  });
+
+  it("counts moves too short to steer", () => {
+    const sim = new CitySim(cfg);
+    sim.beginStroke(1, 0);
+    stroke(sim, 1, 0, [[0, 0], [10, 0], [20, 0], [30, 0]]);
+    expect(sim.distance).toBe(30);
+    expect(sim.roller.dir).toBe(0);
+  });
+
+  it("adds nothing for the first point of a stroke, and starts over on a new stroke", () => {
+    const sim = new CitySim(cfg);
+    sim.beginStroke(1, 0);
+    stroke(sim, 1, 0, [[0, 0], [3, 4]]);
+    expect(sim.distance).toBe(5);
+    sim.endStroke(1);
+    sim.beginStroke(1, 100);
+    stroke(sim, 1, 100, [[900, 900], [900, 910]]); // far from the old stroke's end
+    expect(sim.distance).toBe(15);
+    sim.beginStroke(1, 200); // a stroke that never ended
+    stroke(sim, 1, 200, [[0, 0], [0, 7]]);
+    expect(sim.distance).toBe(22);
+  });
+
+  it("keeps each pointer's path apart", () => {
+    const sim = new CitySim(cfg);
+    sim.beginStroke(1, 0);
+    sim.beginStroke(2, 0);
+    stroke(sim, 1, 0, [[0, 0]]);
+    stroke(sim, 2, 0, [[1000, 1000]]);
+    stroke(sim, 1, 1, [[30, 40]]);
+    stroke(sim, 2, 1, [[1000, 1010]]);
+    stroke(sim, 1, 2, [[30, 100]]);
+    expect(sim.distance).toBe(50 + 10 + 60);
+  });
 });
 
 describe("CitySim houses", () => {
@@ -150,7 +227,7 @@ describe("CitySim houses", () => {
 
   it("paves over a house in its way", () => {
     const sim = new CitySim(cfg);
-    swipe(sim, 1000, 0, 0.1); // south at once, through the lot at (0,1)
+    swipe(sim, 1000, ...PUSH.S); // south at once, through the lot at (0,1)
     sim.advanceTo(2500);
     expect(sim.road.has("0,1")).toBe(true);
     expect(sim.houseTier(0, 1, 100_000)).toBe(0);
@@ -159,9 +236,9 @@ describe("CitySim houses", () => {
   it("grows houses faster beside road that was driven twice", () => {
     const sim = new CitySim(cfg);
     swipe(sim, 1000); // east to (2,0) by 3000
-    swipe(sim, 3000, 0, 0.1); // south to (2,1)
-    swipe(sim, 4000, -0.1, 0); // west to (1,1)
-    swipe(sim, 5000, 0, -0.1); // north, back over (1,0) at 6000
+    swipe(sim, 3000, ...PUSH.S); // south to (2,1)
+    swipe(sim, 4000, ...PUSH.W); // west to (1,1)
+    swipe(sim, 5000, ...PUSH.N); // north, back over (1,0) at 6000
     sim.advanceTo(6500);
     expect(sim.road.get("1,0")).toBe(2);
     // (1,-1) sits beside the twice-driven (1,0); (0,-1) only beside (0,0)
