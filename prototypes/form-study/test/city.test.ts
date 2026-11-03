@@ -5,6 +5,7 @@ const cfg: CityConfig = {
   speed: 1,
   steerMin: 0.03,
   idleStopMs: 300_000,
+  slowMs: 10_000,
   lotDelayMs: [20_000, 20_000],
   lotChance: 1,
   tierAgesMs: [300_000, 1_200_000],
@@ -63,17 +64,54 @@ describe("CitySim roller", () => {
     const sim = new CitySim(cfg);
     swipe(sim, 1000);
     sim.advanceTo(1000 + 600_000);
-    expect(sim.driven).toBe(300);
+    // 290 tiles at full speed, then 5 while slowing over the last 10 seconds
+    expect(sim.driven).toBe(295);
     expect(sim.parked()).toBe(true);
     swipe(sim, 1000 + 700_000);
     sim.advanceTo(1000 + 702_000);
-    expect(sim.driven).toBe(302);
+    expect(sim.driven).toBe(297);
     expect(sim.parked()).toBe(false);
   });
 
-  it("grows the same city whatever the frame rate", () => {
+  it("slows down over the last slowMs before it parks", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000);
+    sim.advanceTo(1000 + 290_000);
+    expect(sim.driven).toBe(290);
+    sim.advanceTo(1000 + 295_000); // 290 + 5 - 25/20 = 293.75 tiles
+    expect(sim.driven).toBe(293);
+    expect(sim.parked()).toBe(false);
+  });
+
+  it("stops dead at idleStopMs when slowMs is 0", () => {
+    const sim = new CitySim({ ...cfg, slowMs: 0 });
+    swipe(sim, 1000);
+    sim.advanceTo(1000 + 600_000);
+    expect(sim.driven).toBe(300);
+  });
+
+  it("covers half the distance when it slows for the whole wait", () => {
+    const sim = new CitySim({ ...cfg, idleStopMs: 30_000, slowMs: 30_000 });
+    swipe(sim, 0);
+    sim.advanceTo(15_000); // 15 - 225/60 = 11.25 tiles
+    expect(sim.driven).toBe(11);
+    sim.advanceTo(60_000);
+    expect(sim.driven).toBe(15);
+    expect(sim.parked()).toBe(true);
+  });
+
+  it("times each paved cell by when the slowing roller reached it", () => {
+    const sim = new CitySim({ ...cfg, idleStopMs: 30_000, slowMs: 30_000 });
+    swipe(sim, 0);
+    sim.advanceTo(2000);
+    // (1,0) is reached at 30000 * (1 - sqrt(1 - 2/30)) ≈ 1017 ms, so its lot at (1,1) is ready 20 s later
+    expect(sim.houseTier(1, 1, 21_010)).toBe(0);
+    expect(sim.houseTier(1, 1, 21_020)).toBe(1);
+  });
+
+  const sameCityAnyFrameRate = (over: Partial<CityConfig>) => {
     const run = (step: number) => {
-      const sim = new CitySim({ ...cfg, lotChance: 0.5, lotDelayMs: [20_000, 120_000], seed: 9 });
+      const sim = new CitySim({ ...cfg, lotChance: 0.5, lotDelayMs: [20_000, 120_000], seed: 9, ...over });
       const turns: [number, number, number][] = [[1000, 0, 0], [3200, 0, 0.1], [5700, -0.1, 0], [9100, 0, -0.1]];
       let t = 0;
       for (const [tt, dx, dy] of turns) {
@@ -85,7 +123,12 @@ describe("CitySim roller", () => {
       return { roads: roads(sim), lots: [...sim.lots.entries()].sort() };
     };
     expect(run(16)).toEqual(run(5000));
-  });
+  };
+
+  it("grows the same city whatever the frame rate", () => sameCityAnyFrameRate({}));
+
+  it("grows the same city whatever the frame rate while slowing", () =>
+    sameCityAnyFrameRate({ idleStopMs: 4000, slowMs: 4000 }));
 });
 
 describe("CitySim houses", () => {

@@ -9,6 +9,8 @@ export interface CityConfig {
   steerMin: number;
   /** The roller parks this long after the last touch. */
   idleStopMs: number;
+  /** Over this last stretch before parking it slows evenly to a stop. */
+  slowMs: number;
   /** A lot beside new road gets its house after a delay in this range. */
   lotDelayMs: [number, number];
   /** Chance that a free cell beside new road becomes a lot. */
@@ -150,15 +152,37 @@ export class CitySim implements Sim {
     }
   }
 
+  /**
+   * Distance in full-speed milliseconds covered `u` ms after the last touch:
+   * full speed until the slowing stretch, then slowing evenly to zero.
+   */
+  private reach(u: number): number {
+    const full = this.cfg.idleStopMs - this.cfg.slowMs;
+    if (u <= full) return u;
+    const s = Math.min(u, this.cfg.idleStopMs) - full;
+    return full + s - (s * s) / (2 * this.cfg.slowMs);
+  }
+
+  /** The inverse of reach: how long after the last touch a distance is covered. */
+  private reachedAt(d: number): number {
+    const full = this.cfg.idleStopMs - this.cfg.slowMs;
+    if (d <= full) return d;
+    const w = this.cfg.slowMs;
+    return full + w * (1 - Math.sqrt(Math.max(0, 1 - (2 * (d - full)) / w)));
+  }
+
   private drive(from: number, until: number): void {
-    let t = from;
+    const last = this.lastInput;
+    let d = this.reach(Math.max(0, from - last));
+    const end = this.reach(until - last);
     for (;;) {
       const toNext = (1 - this.roller.progress) * this.msPerCell;
-      if (t + toNext > until) {
-        this.roller.progress += (until - t) / this.msPerCell;
+      if (d + toNext > end) {
+        this.roller.progress += (end - d) / this.msPerCell;
         return;
       }
-      t += toNext;
+      d += toNext;
+      const t = last + this.reachedAt(d);
       this.roller.progress = 0;
       this.roller.x += DX[this.roller.dir];
       this.roller.y += DY[this.roller.dir];

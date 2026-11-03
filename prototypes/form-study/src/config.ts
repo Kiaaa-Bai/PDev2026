@@ -5,7 +5,8 @@ import type { MonsterConfig } from "./sims/monster";
 export const CITY: CityConfig = {
   speed: 1,
   steerMin: 0.03,
-  idleStopMs: 5 * 60_000,
+  idleStopMs: 30_000,
+  slowMs: 30_000,
   lotDelayMs: [3_000, 15_000],
   lotChance: 0.6,
   tierAgesMs: [5 * 60_000, 20 * 60_000],
