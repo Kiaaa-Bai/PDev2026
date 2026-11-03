@@ -51,9 +51,18 @@ export const HOUSE_POOLS: readonly (readonly string[])[] = [suburban("abcdefg"),
 /** A house is drawn this much smaller than its road tile, by tier. */
 export const HOUSE_SCALE = [0.7, 0.7, 0.7] as const;
 
-/** Shops are the low commercial buildings; apartments, from tier 3 on, the taller blocks; the landmark is a skyscraper. */
+/**
+ * Shops are the low commercial buildings (a to e). The blocks (f to n) are shared out between the two kinds that stand
+ * tall: apartments, from tier 3 on, take the mid-rise f to j, and offices their own, the slab and towers k to n, from tier
+ * 3 on, so an apartment block and an office tower never share a model. The landmark is a skyscraper.
+ */
 export const SHOP_POOL: readonly string[] = commercial("abcde");
-export const BLOCK_POOL: readonly string[] = commercial("fghijklmn");
+export const APARTMENT_POOL: readonly string[] = commercial("fghij");
+export const OFFICE_TOWER_POOL: readonly string[] = commercial("klmn");
+/** Every commercial block, f to n: the apartment pool and the office towers together. */
+export const BLOCK_POOL: readonly string[] = [...APARTMENT_POOL, ...OFFICE_TOWER_POOL];
+/** A young office is low, like a shop (a to e); at tier 3 it rises into a tower. */
+export const OFFICE_LOW_POOL: readonly string[] = commercial("abcde");
 export const LANDMARK = "commercial/building-skyscraper-a";
 
 /** A park is a tree and planters; a detached house has a small tree in its garden. */
@@ -145,8 +154,9 @@ const GARDEN = [[0.3, -0.34, 1.4]] as const;
  * What stands on the lot at (x, y) once its house has appeared, turned to face its road. `built` is when it
  * appeared, which sets a suburban house's roof colour. The kind decides what it is: a house, row house or
  * detached house is a suburban one for its tier (a detached house with a tree in its garden); an apartment
- * is a house until tier 3 and a commercial block after; a shop is a low commercial building and the landmark
- * a skyscraper, whatever the tier; a park is trees and planters and does not grow.
+ * is a house until tier 3 and a mid-rise commercial block after; an office is a low commercial building until tier 3
+ * and a tower after; a shop is a low commercial building and the landmark a skyscraper, whatever the tier; a park is
+ * trees and planters and does not grow.
  */
 export function buildingPlacements(kind: Kind, tier: 1 | 2 | 3, x: number, y: number, turns: Turns, built: number): Placement[] {
   const house = (scale: number): Placement => ({ model: housePiece(tier, x, y), x, y, turns, scale, colour: roofColour(built) });
@@ -159,9 +169,9 @@ export function buildingPlacements(kind: Kind, tier: 1 | 2 | 3, x: number, y: nu
     case "shop":
       return [commercialOne(pick(SHOP_POOL, x, y))];
     case "office":
-      return [commercialOne(pick(BLOCK_POOL, x, y))]; // a commercial block from the day it is built; Task 3 may choose its look
+      return [commercialOne(pick(tier < 3 ? OFFICE_LOW_POOL : OFFICE_TOWER_POOL, x, y))];
     case "apartment":
-      return tier < 3 ? [house(HOUSE_SCALE[tier - 1])] : [commercialOne(pick(BLOCK_POOL, x, y))];
+      return tier < 3 ? [house(HOUSE_SCALE[tier - 1])] : [commercialOne(pick(APARTMENT_POOL, x, y))];
     case "landmark":
       return [commercialOne(LANDMARK, COMMERCIAL_SCALE)]; // a landmark may stand a little over its lot
     case "park":

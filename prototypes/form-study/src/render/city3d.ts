@@ -154,6 +154,8 @@ export class CityView3D {
   private lastRender = -Infinity;
   /** When the traffic was last asked, so that with nothing drawn it is looked at TRAFFIC_FPS times a second, not on every frame. */
   private lastTraffic = -Infinity;
+  /** Whether the last look at the traffic threw, so that a fault that keeps coming is said once, not at 15 frames a second. */
+  private trafficFailed = false;
 
   /**
    * `clock` tells the time of day the sky follows; it is a parameter so a test or the dev page can show another hour.
@@ -459,7 +461,14 @@ export class CityView3D {
     // anybody moved or came or went. Its heavy work is in tasks of its own: this only draws what they found.
     if (changed || now - this.lastTraffic >= 1000 / TRAFFIC_FPS) {
       this.lastTraffic = now;
-      if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
+      try {
+        if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
+        this.trafficFailed = false;
+      } catch (e) {
+        // a fault in the traffic must not stop the city drawing: say so once, carry on without it
+        if (!this.trafficFailed) console.error("the traffic failed; the city goes on without it", e);
+        this.trafficFailed = true;
+      }
     }
     if (!changed) return false;
     this.stale = false;

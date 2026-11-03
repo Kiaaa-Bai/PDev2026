@@ -3,8 +3,9 @@ import {
   buildFleet,
   buildPopulation,
   entriesFor,
+  FLEET_JOBS_PER_VEHICLE,
+  FLEET_MAX_CELLS,
   FLEET_REACH,
-  FLEET_SHARE,
   FLEET_SLOT_MS,
   fleetActivity,
   fleetEntries,
@@ -17,6 +18,8 @@ import {
   type Entry,
   type PathOf,
   type Person,
+  type Workplace,
+  workplacesOf,
 } from "../src/sims/crowd";
 import { CitySim, cellKey, type CityConfig } from "../src/sims/city";
 import type { Kind } from "../src/sims/kinds";
@@ -373,24 +376,66 @@ describe("entriesFor", () => {
     expect(outside.some((e) => e.type === "stroll" && e.stroll.start === s.start)).toBe(false);
   });
 
-  it("agrees with placesOf: errands go only to shops and parks", () => {
-    const sim = new CitySim(cfg);
-    sim.kinds.set(cellKey(20, -1), "shop");
-    expect(placesOf(sim)).toEqual([[20, -1]]);
+  it("sends errands only to the shops and parks it is given, and with none nobody stands at a place", () => {
+    const places: Cell[] = [[20, -1], [35, -1]];
+    const sameCell = (a: Cell, b: Cell) => a[0] === b[0] && a[1] === b[1];
+    const wholeDay = [DAY, DAY + 24 * 3_600_000] as const;
+    let stays = 0;
+    for (let id = 1; id <= 200; id++) {
+      const p: Person = { id, home, work: id % 2 ? work : null };
+      const plan = planFor(p, DAY, SEED, places, false);
+      for (const trip of plan.trips.filter((t) => t.purpose === "errand")) expect(places.some((c) => sameCell(c, trip.to))).toBe(true);
+      for (const e of entriesFor(p, plan, ...wholeDay, SEED, find).entries) {
+        if (e.type === "stand") {
+          expect(places.some((c) => sameCell(c, e.place))).toBe(true);
+          stays++;
+        }
+      }
+      const bare = planFor(p, DAY, SEED, [], false);
+      expect(bare.trips.some((t) => t.purpose === "errand")).toBe(false);
+      expect(entriesFor(p, bare, ...wholeDay, SEED, find).entries.some((e) => e.type === "stand")).toBe(false);
+    }
+    expect(stays).toBeGreaterThan(100);
   });
 });
 
 describe("the service fleet", () => {
-  /** Workplaces on a grid, 6 cells apart, 30 x 30 of them. */
-  const grid: Cell[] = [];
-  for (let x = 0; x < 30; x++) for (let y = 0; y < 30; y++) grid.push([x * 6, y * 6]);
+  /** Workplaces on a grid, 6 cells apart, 30 x 30 of them, each with 12 jobs (an office). */
+  const wp = (cell: Cell, jobs = 12): Workplace => ({ cell, jobs });
+  const gridCells: Cell[] = [];
+  for (let x = 0; x < 30; x++) for (let y = 0; y < 30; y++) gridCells.push([x * 6, y * 6]);
+  const grid: Workplace[] = gridCells.map((c) => wp(c));
   const dist = (a: Cell, b: Cell) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+  /** A way that is just a line of `cells` cells, whatever the trip: how long the trip lasts is then known. */
+  const line = (cells: number): PathOf => () => Array.from({ length: cells }, (_, k): Cell => [k, 0]);
 
-  it("has a vehicle for the share of workplaces FLEET_SHARE says, each with stops that are neither next door nor far away", () => {
-    const fleet = buildFleet(grid, SEED);
-    expect(fleet.length / grid.length).toBeGreaterThan(FLEET_SHARE * 0.9);
-    expect(fleet.length / grid.length).toBeLessThanOrEqual(FLEET_SHARE);
+  it("has about one vehicle for every FLEET_JOBS_PER_VEHICLE jobs, so a shop, an office and the landmark differ", () => {
+    const count = (jobs: number) => buildFleet(grid.map((w) => wp(w.cell, jobs)), SEED).length / grid.length;
+    expect(FLEET_JOBS_PER_VEHICLE).toBeGreaterThan(4); // a 4-job shop is less than one
+    expect(count(0)).toBe(0);
+    expect(count(4)).toBeGreaterThan((4 / FLEET_JOBS_PER_VEHICLE) * 0.8);
+    expect(count(4)).toBeLessThan((4 / FLEET_JOBS_PER_VEHICLE) * 1.2);
+    expect(count(12)).toBeGreaterThan((12 / FLEET_JOBS_PER_VEHICLE) * 0.9);
+    expect(count(12)).toBeLessThan((12 / FLEET_JOBS_PER_VEHICLE) * 1.1);
+    expect(count(30)).toBeGreaterThan((30 / FLEET_JOBS_PER_VEHICLE) * 0.95);
+    expect(count(30)).toBeLessThan((30 / FLEET_JOBS_PER_VEHICLE) * 1.05);
+    expect(count(30)).toBeGreaterThan(count(12));
+    expect(count(12)).toBeGreaterThan(count(4));
+  });
+
+  it("gives a workplace of many jobs several vehicles, each with an id of its own", () => {
+    const fleet = buildFleet([wp([0, 0], 30), wp([20, 0], 30), wp([0, 20], 30), wp([30, 30], 30)], SEED);
     expect(new Set(fleet.map((v) => v.id)).size).toBe(fleet.length);
+    const atOrigin = fleet.filter((v) => v.depot[0] === 0 && v.depot[1] === 0);
+    expect(atOrigin.length).toBeGreaterThanOrEqual(2);
+    expect(atOrigin.length).toBeLessThanOrEqual(3);
+    for (const v of atOrigin) expect(v.stops).toEqual(atOrigin[0].stops);
+    for (const v of fleet) expect(v.id).toBeLessThan(0); // never a resident's
+  });
+
+  it("has stops that are neither next door nor far away, for every vehicle", () => {
+    const fleet = buildFleet(grid, SEED);
+    expect(fleet.length).toBeGreaterThan(0);
     for (const v of fleet) {
       expect(v.stops.length).toBeGreaterThan(0);
       for (const stop of v.stops) {
@@ -409,23 +454,49 @@ describe("the service fleet", () => {
   });
 
   it("is empty where there is nowhere far enough to drive, and for a lone workplace", () => {
-    expect(buildFleet([[0, 0]], SEED)).toEqual([]);
-    expect(buildFleet([[0, 0], [3, 3], [4, 0]], SEED)).toEqual([]);
+    expect(buildFleet([wp([0, 0], 30)], SEED)).toEqual([]);
+    expect(buildFleet([wp([0, 0], 30), wp([3, 3], 30), wp([4, 0], 30)], SEED)).toEqual([]);
     expect(buildFleet([], SEED)).toEqual([]);
   });
 
-  it("has ids that are never a resident's: they are negative", () => {
-    for (const v of buildFleet(grid, SEED)) expect(v.id).toBeLessThan(0);
+  describe("in a city", () => {
+    const cityWith = (kinds: [number, number, Kind][]) => {
+      const sim = new CitySim(cfg);
+      for (const [x, y, kind] of kinds) {
+        sim.lots.set(cellKey(x, y), 0);
+        sim.kinds.set(cellKey(x, y), kind);
+      }
+      return sim;
+    };
+    const offices: [number, number, Kind][] = [];
+    for (let x = 0; x < 10; x++) for (let y = 0; y < 10; y++) offices.push([x * 14, y * 14, "office"]);
+
+    it("lists the workplaces with their jobs: a shop 4, an office 12, the landmark 30", () => {
+      const w = workplacesOf(cityWith([[0, 0, "shop"], [5, 0, "office"], [9, 0, "landmark"], [12, 0, "house"], [14, 0, "park"]]));
+      expect(w.map((x) => [x.cell.join(), x.jobs]).sort()).toEqual([["0,0", 4], ["5,0", 12], ["9,0", 30]]);
+    });
+
+    it("has no fleet where nobody lives, and a fleet once somebody does", () => {
+      expect(buildPopulation(cityWith(offices), 0, SEED).fleet).toEqual([]);
+      expect(buildPopulation(cityWith([...offices, [3, 3, "house"]]), 0, SEED).fleet.length).toBeGreaterThan(20);
+    });
+
+    it("has a fleet sized to the jobs it has", () => {
+      const small = buildPopulation(cityWith([...offices.slice(0, 40), [3, 3, "house"]]), 0, SEED).fleet.length;
+      const large = buildPopulation(cityWith([...offices, [3, 3, "house"]]), 0, SEED).fleet.length;
+      expect(large).toBeGreaterThan(small * 1.8);
+    });
   });
 
   it("drives out to a stop in one slot and back from the same stop in the next, in a car, from its depot", () => {
     const fleet = buildFleet(grid, SEED);
     const noon = at(13, 0, 0);
     const slot = Math.floor(noon / FLEET_SLOT_MS / 2) * 2; // an even slot
+    const short: PathOf = () => [[0, 0], [1, 0], [2, 0], [3, 0]];
     let pairs = 0;
     for (const v of fleet.slice(0, 40)) {
-      const out = fleetEntries([v], slot * FLEET_SLOT_MS, (slot + 1) * FLEET_SLOT_MS - 1, SEED, () => [[0, 0], [1, 0], [2, 0], [3, 0]], () => true).entries;
-      const back = fleetEntries([v], (slot + 1) * FLEET_SLOT_MS, (slot + 2) * FLEET_SLOT_MS - 1, SEED, () => [[0, 0], [1, 0], [2, 0], [3, 0]], () => true).entries;
+      const out = fleetEntries([v], slot * FLEET_SLOT_MS, (slot + 1) * FLEET_SLOT_MS - 1, SEED, short, () => true).entries;
+      const back = fleetEntries([v], (slot + 1) * FLEET_SLOT_MS, (slot + 2) * FLEET_SLOT_MS - 1, SEED, short, () => true).entries;
       if (out.length === 0 || back.length === 0) continue; // a quiet slot
       pairs++;
       for (const e of [...out, ...back]) expect(e).toMatchObject({ type: "move", who: v.id, mode: "car", speed: DRIVE_SPEED });
@@ -455,12 +526,15 @@ describe("the service fleet", () => {
     }
   });
 
-  it("is busy in the working day, quiet in the evening and nearly gone at night", () => {
+  it("is busy in the working day, quiet in the evening and not out at all at night", () => {
     expect(fleetActivity(at(10, 0))).toBeGreaterThan(0.7);
     expect(fleetActivity(at(13, 0))).toBeGreaterThan(0.7);
     expect(fleetActivity(at(20, 30))).toBeLessThan(fleetActivity(at(13, 0)));
-    expect(fleetActivity(at(3, 0))).toBeLessThan(0.15);
-    expect(fleetActivity(at(3, 0))).toBeGreaterThan(0);
+    expect(fleetActivity(at(20, 30))).toBeGreaterThan(0);
+    for (const h of [22, 23, 0, 1, 3, 4, 4.99]) {
+      const hour = Math.floor(h);
+      expect(fleetActivity(at(hour, Math.round((h - hour) * 60)))).toBe(0);
+    }
     for (let m = 0; m < 24 * 60; m += 10) {
       const a = fleetActivity(DAY + m * MIN);
       expect(a).toBeGreaterThanOrEqual(0);
@@ -468,19 +542,19 @@ describe("the service fleet", () => {
     }
   });
 
-  it("puts fewer vehicles on the road at night than at noon", () => {
+  it("puts vehicles on the road at noon and none at all at night, however long it looks", () => {
     const fleet = buildFleet(grid, SEED);
-    const road: PathOf = () => [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [10, 0]];
+    const road: PathOf = line(11);
     const count = (h: number) => {
       let n = 0;
-      for (let k = 0; k < 20; k++) {
+      for (let k = 0; k < 60; k++) {
         const t = at(h, 0) + k * FLEET_SLOT_MS;
         n += fleetEntries(fleet, t, t + 1000, SEED, road, () => true).entries.length;
       }
       return n;
     };
-    expect(count(13)).toBeGreaterThan(count(3) * 5);
-    expect(count(3)).toBeGreaterThan(0);
+    expect(count(13)).toBeGreaterThan(100);
+    for (const h of [22, 23, 1, 3, 4]) expect(count(h), `at ${h}`).toBe(0);
   });
 
   it("looks only at trips with an end in the wanted part of town, and does not ask for the others' ways", () => {
@@ -507,9 +581,8 @@ describe("the service fleet", () => {
 
   it("shows a trip only from its departure to its arrival", () => {
     const fleet = buildFleet(grid, SEED);
-    const path = Array.from({ length: 21 }, (_, k): Cell => [k, 0]); // 20 cells: 5 s at the driving speed
     const t = at(13, 0);
-    const { entries } = fleetEntries(fleet, t, t + FLEET_SLOT_MS * 3, SEED, () => path, () => true);
+    const { entries } = fleetEntries(fleet, t, t + FLEET_SLOT_MS * 3, SEED, line(21), () => true); // 20 cells: 5 s at the driving speed
     expect(entries.length).toBeGreaterThan(20);
     for (const e of entries) {
       expect(e.until - e.from).toBeCloseTo((20 / DRIVE_SPEED) * 1000, 3);
@@ -517,5 +590,53 @@ describe("the service fleet", () => {
       expect(e.until).toBeGreaterThan(t);
       expect(e.depart).toBeLessThanOrEqual(t + FLEET_SLOT_MS * 3);
     }
+  });
+
+  describe("one vehicle is never in two places at once", () => {
+    it("because a trip has to be over by the time the next slot opens: half a slot at the driving speed", () => {
+      expect(FLEET_MAX_CELLS).toBe((FLEET_SLOT_MS / 2 / 1000) * DRIVE_SPEED); // 40 cells
+    });
+
+    /** The most of one vehicle's entries that are under way at the same moment, sampled every 500 ms over a long stretch. */
+    function mostAtOnce(entries: { who: number; from: number; until: number }[], from: number, to: number): number {
+      let most = 0;
+      for (let t = from; t < to; t += 500) {
+        const seen = new Map<number, number>();
+        for (const e of entries) if (e.from <= t && t < e.until) seen.set(e.who, (seen.get(e.who) ?? 0) + 1);
+        for (const n of seen.values()) most = Math.max(most, n);
+      }
+      return most;
+    }
+
+    it("when its trips are as long as one may be", () => {
+      expect(FLEET_MAX_CELLS).toBeLessThan(1000); // (the paths below are that long)
+      const fleet = buildFleet(grid, SEED).slice(0, 40);
+      const from = at(13, 0);
+      const to = from + 40 * FLEET_SLOT_MS;
+      const { entries } = fleetEntries(fleet, from, to, SEED, line(FLEET_MAX_CELLS + 1), () => true);
+      expect(entries.length).toBeGreaterThan(200);
+      expect(mostAtOnce(entries, from + FLEET_SLOT_MS, to - FLEET_SLOT_MS)).toBe(1);
+    });
+
+    it("whatever the length of the way: one that takes longer than a slot leaves a vehicle no room is not driven at all", () => {
+      const fleet = buildFleet(grid, SEED).slice(0, 40);
+      const from = at(13, 0);
+      const to = from + 40 * FLEET_SLOT_MS;
+      // ways of every length from 2 to 120 cells, by the pair the trip is between
+      const anyLength: PathOf = (a, b) => Array.from({ length: 2 + ((a[0] * 7 + a[1] * 13 + b[0] * 3 + b[1]) % 119) }, (_, k): Cell => [k, 0]);
+      const { entries } = fleetEntries(fleet, from, to, SEED, anyLength, () => true);
+      expect(entries.length).toBeGreaterThan(100);
+      expect(mostAtOnce(entries, from + FLEET_SLOT_MS, to - FLEET_SLOT_MS)).toBe(1);
+      for (const e of entries) expect(e.until - e.depart).toBeLessThanOrEqual(FLEET_SLOT_MS * (1 - 0.5) + 1e-6);
+    });
+
+    it("by leaving out a trip too long to finish before the vehicle's next one may begin", () => {
+      expect(FLEET_MAX_CELLS).toBeLessThan(1000);
+      const fleet = buildFleet(grid, SEED).slice(0, 40);
+      const from = at(13, 0);
+      const long = fleetEntries(fleet, from, from + 10 * FLEET_SLOT_MS, SEED, line(FLEET_MAX_CELLS + 2), () => true);
+      expect(long.entries).toEqual([]);
+      expect(long.pending).toBe(false);
+    });
   });
 });

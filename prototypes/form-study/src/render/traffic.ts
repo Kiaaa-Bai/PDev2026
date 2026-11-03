@@ -285,6 +285,8 @@ const REBUILD_DUTY = 100;
 const TIER_CHECK_MS = 5000;
 /** A slice of background work. */
 const SLICE_MS = 5;
+/** After the background work throws, it is tried again no sooner than this. */
+const RETRY_MS = 10_000;
 const MAX_PLANS = 10_000;
 
 interface StandSpot extends Stand {
@@ -360,6 +362,8 @@ export class Traffic {
   /** The clock of the last `update`, which the background work reads. */
   private t = 0;
   private scheduled = false;
+  /** After a failure in the background work, not before this moment (ms of the clock). */
+  private retryAt = -Infinity;
   private job: Job | null = null;
   private roster: Roster | null = null;
 
@@ -441,7 +445,7 @@ export class Traffic {
     if (this.sim !== sim) this.reset(sim);
     this.t = t;
     this.want = { centre, radius };
-    if (!this.scheduled && this.due(t, centre, radius)) {
+    if (!this.scheduled && t >= this.retryAt && this.due(t, centre, radius)) {
       this.scheduled = true;
       this.later(this.work);
     }
@@ -460,6 +464,7 @@ export class Traffic {
     this.paths = new PathCache((x, y) => sim.hasRoad(x, y));
     this.roster = null;
     this.job = null;
+    this.retryAt = -Infinity;
   }
 
   /** Whether the roster is missing, old, made for another day, or for a view the camera has left. */
@@ -473,25 +478,36 @@ export class Traffic {
 
   // ---- the background work: a task, then more tasks until the roster is done ----
 
+  /**
+   * One task of the background work. Whatever happens in it, `scheduled` is cleared unless another task follows: a throw
+   * in the middle (the job is dropped, the last roster kept, the error left to show in the console) must not leave the
+   * traffic waiting for a task that will never come. It tries again after RETRY_MS, not on every frame.
+   */
   private work = (): void => {
-    const sim = this.sim;
-    if (!sim) {
-      this.scheduled = false;
-      return;
+    let more = false;
+    try {
+      const sim = this.sim;
+      if (!sim) return;
+      if (!this.job) {
+        this.refreshPopulation(sim, this.t);
+        this.job = this.startJob(sim, this.t, this.want.centre, this.want.radius);
+      }
+      const job = this.job;
+      this.step(sim, job, new Budget(SLICE_MS, this.perf));
+      if (job.i < job.list.length || job.v < job.vehicles.length) {
+        more = true;
+        this.later(this.work);
+        return;
+      }
+      this.roster = this.finish(job);
+      this.job = null;
+    } catch (e) {
+      this.job = null;
+      this.retryAt = this.t + RETRY_MS;
+      throw e;
+    } finally {
+      if (!more) this.scheduled = false;
     }
-    if (!this.job) {
-      this.refreshPopulation(sim, this.t);
-      this.job = this.startJob(sim, this.t, this.want.centre, this.want.radius);
-    }
-    const job = this.job;
-    this.step(sim, job, new Budget(SLICE_MS, this.perf));
-    if (job.i < job.list.length || job.v < job.vehicles.length) {
-      this.later(this.work);
-      return;
-    }
-    this.roster = this.finish(job);
-    this.job = null;
-    this.scheduled = false;
   };
 
   /** Builds who lives and works where the first time, then again after the city changes or houses grow, and not more often than every few seconds. */

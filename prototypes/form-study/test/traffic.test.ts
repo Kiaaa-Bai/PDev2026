@@ -397,7 +397,7 @@ describe("Traffic", () => {
     expect(traffic.drawn().people).toBeGreaterThan(0);
   });
 
-  it("reports motion while somebody walks or drives in view, and not when only people standing about are", () => {
+  it("reports motion while somebody walks or drives in view", () => {
     const sim = town();
     const { traffic, flush } = make();
     // at 13:00 people are at the shop and park and strolling: something moves
@@ -406,6 +406,34 @@ describe("Traffic", () => {
     flush();
     expect(traffic.update(sim, noon, [20, 0], 40)).toBe(true);
     expect(traffic.update(sim, new Date(at(13, 0, 1)), [20, 0], 40)).toBe(true);
+  });
+
+  it("reports no motion, and draws nothing again, while only people standing about are in view and none has come or gone", () => {
+    // a park on a street, apartments around it, and a view no bigger than the park's frontage: the people who stand there, and few passers-by
+    const sim = new CitySim(cfg);
+    for (let x = 0; x <= 40; x++) sim.road.set(cellKey(x, 0), 3);
+    for (let x = 0; x <= 40; x++) {
+      sim.lots.set(cellKey(x, -1), 0);
+      sim.kinds.set(cellKey(x, -1), x === 20 ? "park" : "apartment");
+    }
+    sim.version = 1;
+    const { traffic, flush } = make();
+    let gates = 0;
+    for (let m = 10 * 60 + 40; m < 15 * 60 + 40; m++) {
+      const t = DAY + m * 60_000;
+      traffic.update(sim, new Date(t), [20, 0], 0.6);
+      flush();
+      traffic.update(sim, new Date(t), [20, 0], 0.6);
+      const before = traffic.drawn();
+      if (before.cars !== 0 || before.people === 0 || traffic.standing() !== before.people) continue; // somebody walks: not the case
+      const first = traffic.update(sim, new Date(t + 300), [20, 0], 0.6);
+      const second = traffic.update(sim, new Date(t + 600), [20, 0], 0.6);
+      const after = traffic.drawn();
+      if (after.people !== before.people || after.cars !== 0 || traffic.standing() !== after.people) continue; // somebody came or went
+      expect([first, second], `at minute ${m}`).toEqual([false, false]);
+      gates++;
+    }
+    expect(gates).toBeGreaterThan(5);
   });
 
   it("has nobody about, and reports no motion, in the small hours", () => {
@@ -432,25 +460,60 @@ describe("Traffic", () => {
     expect(carsSeen).toBeGreaterThan(0);
   });
 
-  it("puts service vehicles on the road in the working day even where nobody lives, and nobody on foot", () => {
+  /** A long street with an office or shop every 5 cells, and `homes` houses at the west end. */
+  function workTown(homes: number) {
     const sim = new CitySim(cfg);
     for (let x = 0; x <= 120; x++) sim.road.set(cellKey(x, 0), 3);
-    for (let x = 0; x <= 120; x += 5) {
+    for (let x = 10; x <= 120; x += 5) {
       sim.lots.set(cellKey(x, -1), 0);
       sim.kinds.set(cellKey(x, -1), x % 10 === 0 ? "office" : "shop");
     }
+    for (let i = 0; i < homes; i++) {
+      sim.lots.set(cellKey(i, -1), 0);
+      sim.kinds.set(cellKey(i, -1), "house");
+    }
     sim.version = 1;
+    return sim;
+  }
+
+  it("puts service vehicles on the road in the working day where people live", () => {
+    const sim = workTown(3);
     const { traffic, flush } = make();
     let cars = 0;
-    for (let s = 0; s < 60; s += 2) {
+    for (let s = 0; s < 120; s += 2) {
       const t = new Date(at(13, 0, s));
       traffic.update(sim, t, [60, 0], 70);
       flush();
       traffic.update(sim, t, [60, 0], 70);
       cars += traffic.drawn().cars;
-      expect(traffic.drawn().people).toBe(0);
     }
     expect(cars).toBeGreaterThan(10);
+  });
+
+  it("puts none on the road where nobody lives, however many workplaces there are", () => {
+    const sim = workTown(0);
+    const { traffic, flush } = make();
+    for (let s = 0; s < 120; s += 2) {
+      const t = new Date(at(13, 0, s));
+      traffic.update(sim, t, [60, 0], 70);
+      flush();
+      expect(traffic.update(sim, t, [60, 0], 70)).toBe(false);
+      expect(traffic.drawn()).toEqual({ cars: 0, people: 0 });
+    }
+  });
+
+  it("goes quiet at night: with the fleet off the streets a parked night city draws nothing at all", () => {
+    const sim = workTown(20);
+    const { traffic, flush } = make();
+    let frames = 0;
+    for (let m = 60; m < 5 * 60; m += 7) { // 01:00 to 05:00, after the last late errand is home
+      const t = new Date(DAY + m * 60_000);
+      traffic.update(sim, t, [60, 0], 70);
+      flush();
+      if (traffic.update(sim, t, [60, 0], 70)) frames++;
+      expect(traffic.drawn()).toEqual({ cars: 0, people: 0 });
+    }
+    expect(frames).toBe(0);
   });
 
   it("never draws more cars or people than its caps, whatever the crowd, and fills them when there are enough", () => {
@@ -519,7 +582,7 @@ describe("Traffic", () => {
 
   it("asks for another task only when something changed or its picture is old", () => {
     const sim = town();
-    const { traffic, queue, flush, tick } = make();
+    const { traffic, queue, flush } = make();
     const t = new Date(at(13, 0, 0));
     traffic.update(sim, t, [20, 0], 30);
     flush();
@@ -533,7 +596,6 @@ describe("Traffic", () => {
     traffic.update(sim, new Date(at(13, 0, 5)), [60, 0], 30); // the view moved a long way
     expect(queue.length).toBe(1);
     flush();
-    tick(1);
   });
 
   it("rebuilds who lives and works where after the city changes, but not on every change, and not inside update", () => {
@@ -619,6 +681,132 @@ describe("Traffic", () => {
     traffic.update(sim, new Date(at(15, 0, 0)), [20, 0], 30); // two hours on
     run();
     expect(traffic.populationBuilds()).toBe(2);
+  });
+
+  it("recovers when its background work throws: nothing stays scheduled for good, and it tries again after a pause", () => {
+    const sim = town();
+    const { traffic, flush, queue } = make();
+    const real = sim.hasRoad.bind(sim);
+    let broken = true;
+    sim.hasRoad = (x: number, y: number) => {
+      if (broken) throw new Error("boom");
+      return real(x, y);
+    };
+    traffic.update(sim, new Date(at(13, 0, 0)), [20, 0], 30);
+    expect(() => flush()).toThrow("boom");
+    expect(queue.length).toBe(0);
+    // not again on every frame, which would throw on every frame
+    for (let ms = 0; ms < 2000; ms += 100) expect(traffic.update(sim, new Date(at(13, 0, 0) + 100 + ms), [20, 0], 30)).toBe(false);
+    expect(queue.length).toBe(0);
+    // once the fault is gone, and the pause is over, it works through to a picture
+    broken = false;
+    traffic.update(sim, new Date(at(13, 0, 30)), [20, 0], 30);
+    expect(queue.length).toBe(1);
+    flush();
+    traffic.update(sim, new Date(at(13, 0, 30)), [20, 0], 30);
+    expect(traffic.drawn().people).toBeGreaterThan(0);
+    expect(queue.length).toBe(0);
+  });
+
+  it("recovers from a throw in the middle of a long job, not only the first", () => {
+    const sim = town();
+    sim.advanceTo(cfg.tierAgesMs[1] + 1);
+    const { traffic, flush, queue } = make();
+    const real = sim.hasRoad.bind(sim);
+    let calls = 0;
+    sim.hasRoad = (x: number, y: number) => {
+      if (++calls === 200) throw new Error("boom in the middle");
+      return real(x, y);
+    };
+    traffic.update(sim, new Date(at(13, 0, 0)), [20, 0], 40);
+    expect(() => flush()).toThrow("boom in the middle");
+    expect(queue.length).toBe(0);
+    traffic.update(sim, new Date(at(13, 0, 30)), [20, 0], 40);
+    flush();
+    traffic.update(sim, new Date(at(13, 0, 30)), [20, 0], 40);
+    expect(traffic.drawn().people).toBeGreaterThan(0);
+  });
+
+  describe("a brand-new city", () => {
+    /** A short street from the roller's first cell with `houses` houses on its north side and no workplace. */
+    function fresh(houses: number, roadCells = 8) {
+      const sim = new CitySim(cfg);
+      for (let x = 0; x < roadCells; x++) sim.road.set(cellKey(x, 0), 1);
+      for (let x = 0; x < houses; x++) {
+        sim.lots.set(cellKey(x, -1), 0);
+        sim.kinds.set(cellKey(x, -1), "house");
+      }
+      sim.version = 1;
+      return sim;
+    }
+    const meshesOf = (scene: THREE.Scene) => scene.children.filter((c): c is THREE.InstancedMesh => (c as THREE.InstancedMesh).isInstancedMesh);
+
+    for (const houses of [0, 1, 3, 5]) {
+      it(`runs from 07:00 to 22:00 with ${houses} houses and no workplace: nobody stuck, nothing NaN, nothing thrown`, () => {
+        const sim = fresh(houses);
+        const { traffic, scene, flush, queue } = make();
+        let seenPeople = 0;
+        for (let m = 7 * 60; m <= 22 * 60; m += 5) {
+          const t = new Date(DAY + m * 60_000);
+          expect(() => traffic.update(sim, t, [3, 0], 15)).not.toThrow();
+          flush();
+          expect(queue.length, `at minute ${m}`).toBe(0); // the work always ends: nothing stays scheduled
+          traffic.update(sim, t, [3, 0], 15);
+          const d = traffic.drawn();
+          expect(Number.isInteger(d.cars) && Number.isInteger(d.people)).toBe(true);
+          expect(d.cars).toBe(0); // no workplace, no commute, no fleet
+          seenPeople += d.people;
+          for (const mesh of meshesOf(scene)) {
+            for (let i = 0; i < mesh.count * 16; i++) {
+              if (!Number.isFinite(mesh.instanceMatrix.array[i])) throw new Error(`NaN in a matrix at minute ${m}`);
+            }
+          }
+        }
+        expect(traffic.info()).not.toBeNull();
+        expect(traffic.info()!.people).toBe(houses * 2); // tier 1: two residents a house
+        // the people have no job to go to and no place to go to, yet they come out to stroll
+        if (houses > 0) expect(seenPeople).toBeGreaterThan(0);
+        else expect(seenPeople).toBe(0);
+      });
+    }
+
+    it("shows people strolling at 08:00 already, when a few of the residents are out", () => {
+      let out = 0;
+      for (let id = 0; id < 12; id++) {
+        // twelve towns that differ in the seed, so a different two or ten people are out at 08:00 in each
+        const sim = fresh(5);
+        const seeded = new CitySim({ ...cfg, seed: 100 + id });
+        for (const [k, v] of sim.road) seeded.road.set(k, v);
+        for (const [k, v] of sim.lots) seeded.lots.set(k, v);
+        for (const [k, v] of sim.kinds) seeded.kinds.set(k, v);
+        seeded.version = 1;
+        const { traffic, flush } = make();
+        const t = new Date(at(8, 0, 0));
+        traffic.update(seeded, t, [3, 0], 15);
+        flush();
+        traffic.update(seeded, t, [3, 0], 15);
+        out += traffic.drawn().people;
+      }
+      expect(out).toBeGreaterThan(0);
+    });
+
+    it("copes with no road at all, and with a lot that no road touches", () => {
+      const noRoad = fresh(3, 0);
+      const { traffic, flush, queue } = make();
+      for (let m = 7 * 60; m < 22 * 60; m += 30) {
+        const t = new Date(DAY + m * 60_000);
+        traffic.update(noRoad, t, [0, 0], 15);
+        flush();
+        expect(traffic.update(noRoad, t, [0, 0], 15)).toBe(false);
+        expect(traffic.drawn()).toEqual({ cars: 0, people: 0 });
+      }
+      expect(queue.length).toBe(0);
+      expect(new CitySim(cfg).houses(0)).toBe(0);
+      const empty = new CitySim(cfg);
+      traffic.update(empty, new Date(at(8, 0, 0)), [0, 0], 15);
+      flush();
+      expect(traffic.update(empty, new Date(at(8, 0, 0)), [0, 0], 15)).toBe(false);
+    });
   });
 
   it("starts over with another city", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  APARTMENT_POOL,
   BLOCK_POOL,
   buildingPlacements,
   clampHalfHeight,
@@ -22,6 +23,8 @@ import {
   MAX_HALF_HEIGHT,
   MIN_HALF_HEIGHT,
   MODEL_NAMES,
+  OFFICE_LOW_POOL,
+  OFFICE_TOWER_POOL,
   PARK_PLANTER,
   PARK_TREE,
   ROAD_BASE,
@@ -473,12 +476,12 @@ describe("building kinds", () => {
     }
   });
 
-  it("draws an apartment as a house at tiers 1 and 2, and as a commercial block of f to n at tier 3", () => {
+  it("draws an apartment as a house at tiers 1 and 2, and as a commercial block of f to j at tier 3", () => {
     for (const tier of [1, 2] as const) expect(lot("apartment", tier)).toEqual(lot("house", tier));
     const [block] = lot("apartment", 3);
-    expect(BLOCK_POOL).toContain(block.model);
+    expect(APARTMENT_POOL).toContain(block.model);
     expect(block.colour).toBe(WHITE);
-    expect(BLOCK_POOL).toEqual("fghijklmn".split("").map((c) => `commercial/building-${c}`));
+    expect(APARTMENT_POOL).toEqual("fghij".split("").map((c) => `commercial/building-${c}`));
   });
 
   it("draws the landmark as the skyscraper, in its own colours, whatever the tier", () => {
@@ -553,14 +556,50 @@ describe("building kinds", () => {
     }
   });
 
-  it("draws an office as a commercial block from the day it is built, whatever the tier (its own look is for later)", () => {
-    for (const tier of TIERS) {
-      const placed = lot("office", tier);
-      expect(placed).toHaveLength(1);
-      expect(BLOCK_POOL).toContain(placed[0].model);
-      expect(placed[0].colour).toBe(WHITE);
+  it("draws an office low (the commercial a to e models) at tiers 1 and 2 and as a tower (k to n) at tier 3", () => {
+    for (let x = 0; x < 40; x++) {
+      for (const tier of [1, 2] as const) {
+        const placed = lot("office", tier, x, -1);
+        expect(placed).toHaveLength(1);
+        expect(OFFICE_LOW_POOL, `x ${x} tier ${tier}`).toContain(placed[0].model);
+        expect(placed[0].colour).toBe(WHITE);
+      }
+      const tower = lot("office", 3, x, -1);
+      expect(tower).toHaveLength(1);
+      expect(OFFICE_TOWER_POOL, `x ${x}`).toContain(tower[0].model);
+      expect(tower[0].colour).toBe(WHITE);
     }
-    expect(new Set(TIERS.map((t) => layoutKey(lot("office", t)))).size).toBe(1); // it does not grow
+    expect(OFFICE_LOW_POOL).toEqual("abcde".split("").map((c) => `commercial/building-${c}`));
+    expect(OFFICE_TOWER_POOL).toEqual("klmn".split("").map((c) => `commercial/building-${c}`));
+  });
+
+  it("gives offices a look of their own: no office model is one that a tier 3 apartment is drawn in", () => {
+    expect(OFFICE_TOWER_POOL.filter((m) => APARTMENT_POOL.includes(m))).toEqual([]);
+    const apartments = new Set<string>();
+    const towers = new Set<string>();
+    for (let x = 0; x < 80; x++) {
+      apartments.add(lot("apartment", 3, x, -1)[0].model);
+      towers.add(lot("office", 3, x, -1)[0].model);
+    }
+    expect([...apartments].filter((m) => towers.has(m))).toEqual([]);
+    // the two pools together are the commercial blocks f to n, which the models list and the size table cover
+    expect([...APARTMENT_POOL, ...OFFICE_TOWER_POOL]).toEqual([...BLOCK_POOL]);
+    expect(apartments.size).toBeGreaterThan(2);
+    expect(towers.size).toBeGreaterThan(2);
+  });
+
+  it("lets an office rise from low to tower when its house ages to tier 3, which layoutKey sees", () => {
+    expect(layoutKey(lot("office", 1))).toBe(layoutKey(lot("office", 2)));
+    expect(layoutKey(lot("office", 3))).not.toBe(layoutKey(lot("office", 1)));
+  });
+
+  it("draws every office at the size that fits its model", () => {
+    for (let x = 0; x < 40; x++) {
+      for (const tier of TIERS) {
+        const office = lot("office", tier, x, -1)[0];
+        expect(office.scale).toBe(commercialScale(office.model));
+      }
+    }
   });
 
   it("is the same through buildingPlacements as through layoutCells", () => {

@@ -40,16 +40,23 @@ export function buildPopulation(sim: CityLots, t: number, seed: number): Populat
     const job = given.get(r.id);
     return { id: r.id, home: r.home, work: job === null || job === undefined ? null : (where.get(job) ?? null) };
   });
-  return { people, places: placesOf(sim), fleet: buildFleet(workplacesOf(sim), seed) };
+  // the vehicles are the workplaces' errand-runners for a city that lives: with nobody here there is nobody to run them
+  return { people, places: placesOf(sim), fleet: people.length === 0 ? [] : buildFleet(workplacesOf(sim), seed) };
 }
 
-/** The lots people work at: shops, offices and the landmark. */
-export function workplacesOf(sim: Pick<CityLots, "kinds">): Cell[] {
-  const out: Cell[] = [];
+/** A lot people work at, with the number of jobs in it. */
+export interface Workplace {
+  cell: Cell;
+  jobs: number;
+}
+
+/** The lots people work at: shops, offices and the landmark, each with its jobs. */
+export function workplacesOf(sim: Pick<CityLots, "kinds">): Workplace[] {
+  const out: Workplace[] = [];
   for (const [key, kind] of sim.kinds) {
     if (!(kind in JOBS)) continue;
     const comma = key.indexOf(",");
-    out.push([Number(key.slice(0, comma)), Number(key.slice(comma + 1))]);
+    out.push({ cell: [Number(key.slice(0, comma)), Number(key.slice(comma + 1))], jobs: JOBS[kind as keyof typeof JOBS] });
   }
   return out;
 }
@@ -283,19 +290,27 @@ export function entriesFor(
 
 /**
  * Residents drive only seconds a day, so a city of homes alone would show a car or two at a time. Its workplaces keep
- * vans, taxis and delivery trucks that run between them all day: one vehicle for every workplace, each
- * driving out from its workplace (its depot) to one of a few others some way off and back, a trip a slot.
+ * vans, taxis and delivery trucks that run between them in the working day: about one vehicle for every
+ * `FLEET_JOBS_PER_VEHICLE` jobs (a shop's 4 jobs are sometimes one, an office's 12 one, the landmark's 30 two or three),
+ * each driving out from its workplace (its depot) to one of a few others some way off and back, a trip a slot.
  */
-export const FLEET_SHARE = 1;
+export const FLEET_JOBS_PER_VEHICLE = 12;
 /** A vehicle makes one trip in each slot of this length: out in an even one, back in the odd one after it. */
 export const FLEET_SLOT_MS = 20_000;
+/** It departs in the first half of its slot, at a moment of its own. */
+const FLEET_DEPART_SPREAD = 0.5;
+/**
+ * A trip must be over before the next slot begins, which is as early as the vehicle's next trip may depart: half a slot
+ * after the latest departure. A way longer than this many cells at the driving speed is not driven, so a vehicle is
+ * never in two places at once.
+ */
+const FLEET_MAX_TRIP_MS = FLEET_SLOT_MS * (1 - FLEET_DEPART_SPREAD);
+export const FLEET_MAX_CELLS = (FLEET_MAX_TRIP_MS / 1000) * DRIVE_SPEED;
 /** Its stops are workplaces this many cells away (by grid distance), at least and at most: far enough to be seen driving. */
 export const FLEET_REACH = [12, 48] as const;
 const FLEET_STOPS = 6;
-/** A trip is looked for on the road this long after it departs (a path of 180 cells at the driving speed). */
-const FLEET_TRANSIT_MS = 45_000;
-/** It departs in the first half of its slot, at a moment of its own. */
-const FLEET_DEPART_SPREAD = 0.5;
+/** A workplace keeps at most this many vehicles (their ids are numbered from 0 within the lot). */
+const FLEET_PER_DEPOT_MAX = 7;
 const FLEET_BUCKET = 16;
 
 /** A service vehicle: a number that is negative (no resident's is), the workplace it sets out from and the ones it drives to. */
@@ -309,22 +324,26 @@ const cellNumber = (c: Cell) => (c[0] + 1_000_000) * 2_000_001 + (c[1] + 1_000_0
 const bucketKey = (bx: number, by: number) => (bx + 1_048_576) * 2_097_152 + (by + 1_048_576);
 
 /**
- * The fleet of a city's workplaces: each keeps a vehicle, whose stops are the (up to six) nearest
- * workplaces between `FLEET_REACH` cells away. A workplace with none that far has no vehicle. A function of the
- * workplaces' cells and the seed, whatever order they come in.
+ * The fleet of a city's workplaces: each keeps `jobs / FLEET_JOBS_PER_VEHICLE` vehicles, the fraction decided by the
+ * seed, and their stops are the (up to six) nearest workplaces between `FLEET_REACH` cells away. A workplace with none
+ * that far has no vehicle. A function of the workplaces and the seed, whatever order they come in.
  */
-export function buildFleet(workplaces: readonly Cell[], seed: number): Vehicle[] {
+export function buildFleet(workplaces: readonly Workplace[], seed: number): Vehicle[] {
   const buckets = new Map<number, Cell[]>();
-  for (const w of workplaces) {
-    const k = bucketKey(Math.floor(w[0] / FLEET_BUCKET), Math.floor(w[1] / FLEET_BUCKET));
+  for (const { cell } of workplaces) {
+    const k = bucketKey(Math.floor(cell[0] / FLEET_BUCKET), Math.floor(cell[1] / FLEET_BUCKET));
     const list = buckets.get(k);
-    if (list) list.push(w);
-    else buckets.set(k, [w]);
+    if (list) list.push(cell);
+    else buckets.set(k, [cell]);
   }
   const reach = Math.ceil(FLEET_REACH[1] / FLEET_BUCKET);
   const fleet: Vehicle[] = [];
-  for (const depot of workplaces) {
-    if (unit(seed, depot[0], depot[1], 91) >= FLEET_SHARE) continue; // below 1, only that share of workplaces keep one
+  for (const { cell: depot, jobs } of workplaces) {
+    const wanted = jobs / FLEET_JOBS_PER_VEHICLE;
+    const whole = Math.floor(wanted);
+    // the part of a vehicle left over is a chance of one more, by the seed, so a 4-job shop is sometimes a vehicle
+    const count = Math.min(FLEET_PER_DEPOT_MAX, whole + (unit(seed, depot[0], depot[1], 91) < wanted - whole ? 1 : 0));
+    if (count === 0) continue;
     const bx = Math.floor(depot[0] / FLEET_BUCKET);
     const by = Math.floor(depot[1] / FLEET_BUCKET);
     const found: { cell: Cell; d: number }[] = [];
@@ -338,16 +357,17 @@ export function buildFleet(workplaces: readonly Cell[], seed: number): Vehicle[]
     }
     if (found.length === 0) continue;
     found.sort((a, b) => a.d - b.d || a.cell[0] - b.cell[0] || a.cell[1] - b.cell[1]);
-    fleet.push({ id: -1 - cellNumber(depot), depot, stops: found.slice(0, FLEET_STOPS).map((f) => f.cell) });
+    const stops = found.slice(0, FLEET_STOPS).map((f) => f.cell);
+    for (let k = 0; k < count; k++) fleet.push({ id: -1 - (cellNumber(depot) * (FLEET_PER_DEPOT_MAX + 1) + k), depot, stops });
   }
   return fleet;
 }
 
-/** The share of the fleet that makes a trip in a slot by day and at night. */
+/** The share of the fleet that makes a trip in a slot by day and at night (none: the streets are left to the people). */
 const FLEET_DAY = 0.9;
-const FLEET_NIGHT = 0.02;
+const FLEET_NIGHT = 0;
 
-/** The share of the fleet on the road at the local time `t`: most of it in the working day, a few at night, none quite gone. */
+/** The share of the fleet on the road at the local time `t`: most of it in the working day, fewer at dawn and in the evening, none from 22:00 to 05:00. */
 export function fleetActivity(t: number): number {
   const d = new Date(t);
   const h = d.getHours() + d.getMinutes() / 60;
@@ -359,9 +379,10 @@ export function fleetActivity(t: number): number {
 
 /**
  * The fleet's trips under way between `from` and `to` (ms), as entries (always in a car, at the driving speed). A
- * vehicle makes a trip in a slot with the chance `fleetActivity` gives for the hour; a trip is looked at only when
- * `wanted` says one of its ends is in the part of town that matters, and counts only when `pathOf` knows a way. `pending`
- * is true when it did not know yet for some trip. Pure: the same slot gives the same trips whenever it is asked.
+ * vehicle makes a trip in a slot with the chance `fleetActivity` gives for the hour, and none that would still be under
+ * way when its next slot begins (a way over `FLEET_MAX_CELLS`); a trip is looked at only when `wanted` says one of its
+ * ends is in the part of town that matters, and counts only when `pathOf` knows a way. `pending` is true when it did not
+ * know yet for some trip. Pure: the same slot gives the same trips whenever it is asked.
  */
 export function fleetEntries(
   fleet: readonly Vehicle[],
@@ -373,7 +394,8 @@ export function fleetEntries(
 ): { entries: Move[]; pending: boolean } {
   const entries: Move[] = [];
   let pending = false;
-  const firstSlot = Math.floor((from - FLEET_TRANSIT_MS) / FLEET_SLOT_MS);
+  // a slot's trips are over by the end of the slot after the first half-slot of departures and the longest trip
+  const firstSlot = Math.floor((from - FLEET_SLOT_MS * FLEET_DEPART_SPREAD - FLEET_MAX_TRIP_MS) / FLEET_SLOT_MS);
   const lastSlot = Math.floor(to / FLEET_SLOT_MS);
   for (let slot = firstSlot; slot <= lastSlot; slot++) {
     const start = slot * FLEET_SLOT_MS;
@@ -381,7 +403,7 @@ export function fleetEntries(
     for (const v of fleet) {
       if (unit(seed, v.id, slot, 7) >= busy) continue;
       const depart = start + unit(seed, v.id, slot, 6) * FLEET_SLOT_MS * FLEET_DEPART_SPREAD;
-      if (depart > to || depart + FLEET_TRANSIT_MS <= from) continue;
+      if (depart > to || depart + FLEET_MAX_TRIP_MS <= from) continue;
       const stop = v.stops[Math.floor(unit(seed, v.id, Math.floor(slot / 2), 5) * v.stops.length)];
       const [a, b] = slot % 2 === 0 ? [v.depot, stop] : [stop, v.depot];
       if (!wanted(a) && !wanted(b)) continue;
@@ -390,7 +412,7 @@ export function fleetEntries(
         pending = true;
         continue;
       }
-      if (path === null || path.length < 2) continue;
+      if (path === null || path.length < 2 || path.length - 1 > FLEET_MAX_CELLS) continue;
       const until = depart + ((path.length - 1) / DRIVE_SPEED) * 1000;
       if (until <= from) continue;
       entries.push({ type: "move", who: v.id, path, depart, speed: DRIVE_SPEED, mode: "car", from: depart, until });
