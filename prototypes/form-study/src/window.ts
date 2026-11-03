@@ -173,8 +173,12 @@ async function boot() {
   setInterval(() => saveCity(city), SAVE_EVERY_MS);
   // Closing the window waits for the save to land; the window is then destroyed (which the capability allows).
   await getCurrentWindow().onCloseRequested(async () => {
-    saveCity(city);
-    await saving;
+    try {
+      saveCity(city);
+      await saving;
+    } catch (e) {
+      console.error("could not save the city on close", e); // never block closing
+    }
   });
   window.addEventListener("beforeunload", () => saveCity(city)); // best effort, for a reload
 }

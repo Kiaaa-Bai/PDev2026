@@ -72,9 +72,9 @@ quests that expire. Honest: a quiet day must look quiet.
   would change what a given hand movement is worth. Distance and the steering
   threshold are measured in points. The Heat tab shows today only, scaled to
   the area the pointer covered that day.
-- *My call:* days are written as `cursor-YYYY-MM-DD.jsonl` in
-  `prototypes/data`, so the old trackpad days stay separate and are not mixed
-  into the new city.
+- *My call:* days are written as `cursor-YYYY-MM-DD.jsonl`, so the old
+  trackpad days (`touches-*`) stay separate and are not mixed into the new
+  city.
 - Consequence of Kia's choice, stated so it is not a surprise: typing and
   scrolling no longer move the pointer, so those stretches read as quiet. The
   piece now records the pointer's wear, not the fingers'.
@@ -96,6 +96,13 @@ tuned on real use.
 ## Persistence
 
 - The city is the result of every recorded day, in order.
+- *Kia's call (2026-11-03):* each Mac keeps its own data, like a single-player
+  game. The day files and the snapshot live in the app's per-user data folder
+  (on macOS `~/Library/Application Support/edu.nyu.kiabai.trackpad/`), created
+  on first launch, so a classmate's install starts from empty land and grows
+  from their own use. The app never reads or writes `prototypes/data`, and a
+  build ships none of it; only the dev page in a browser still serves that
+  folder for its sample and day files.
 - *My call:* replaying weeks of records at every launch would get slow (one
   trackpad day was 13 MB), so the window keeps a snapshot of the city state
   plus the time of the last record it includes. At launch it loads the
@@ -137,7 +144,7 @@ tuned on real use.
 - Close-up camera centred on the roller. Scroll or pinch inside the window
   zooms out toward the whole city; about five seconds after the last zoom it
   eases back to the roller.
-- Window stays 512×348 and always on top.
+- Window stays 512×380 (the full 320 pt canvas under the tab bar) and always on top.
 - The Heat tab stays a flat 2D map, now of where the pointer has been across
   the screens.
 

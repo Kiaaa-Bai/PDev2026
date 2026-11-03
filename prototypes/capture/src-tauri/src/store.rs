@@ -1,16 +1,12 @@
-//! One append-only cursor-YYYY-MM-DD.jsonl file per local day in
-//! prototypes/data/, plus the city snapshot beside them.
+//! One append-only cursor-YYYY-MM-DD.jsonl file per local day, plus the city
+//! snapshot beside them. Every function takes the directory; the app passes
+//! its per-user app data folder, so each Mac keeps its own files.
 
 use crate::record::TouchRecord;
 use chrono::{Local, NaiveDate};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-
-/// prototypes/data, resolved from the source tree (fine for a prototype).
-pub fn data_dir() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data"))
-}
 
 const SNAPSHOT_FILE: &str = "city-snapshot.json";
 
@@ -158,6 +154,25 @@ mod tests {
             days_text(dir.path(), from),
             "cursor-2026-11-02.jsonl\ncursor-2026-11-03.jsonl\n"
         );
+    }
+
+    #[test]
+    fn a_directory_that_does_not_exist_yet_is_created_on_first_write() {
+        let root = tempdir().unwrap();
+        let fresh = root.path().join("never").join("made");
+
+        // Nothing there: reads are empty, not errors.
+        assert_eq!(text_for(&fresh, day(11)), "");
+        assert_eq!(days_text(&fresh, day(1)), "");
+        assert_eq!(load_snapshot(&fresh), "");
+
+        DailyWriter::new(fresh.clone()).write(day(11), &[rec(1), rec(2)]).unwrap();
+        assert_eq!(text_for(&fresh, day(11)).lines().count(), 2);
+        assert_eq!(days_text(&fresh, day(1)).lines().count(), 2);
+
+        let other = root.path().join("also").join("new");
+        save_snapshot(&other, "{\"a\":1}").unwrap();
+        assert_eq!(load_snapshot(&other), "{\"a\":1}");
     }
 
     #[test]

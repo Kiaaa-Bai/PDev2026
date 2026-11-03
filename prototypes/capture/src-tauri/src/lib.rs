@@ -9,37 +9,42 @@ mod store;
 mod wake;
 
 use chrono::{Local, TimeZone};
+use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 
 struct CaptureSource(&'static str);
 
+/// This Mac's app data folder (on macOS ~/Library/Application Support/<identifier>/):
+/// the day files and the city snapshot live here, so every install starts from empty land.
+struct DataDir(PathBuf);
+
 /// Today's records as raw .jsonl text, so the window can regrow today's forms.
 /// async so reading a large day file stays off the main thread.
 #[tauri::command]
-async fn today_text() -> String {
-    store::today_text(&store::data_dir())
+async fn today_text(dir: tauri::State<'_, DataDir>) -> Result<String, String> {
+    Ok(store::today_text(&dir.0))
 }
 
 /// Every day file from the local date of `from_ms` (epoch milliseconds) on,
 /// concatenated in date order, so the window can regrow the whole city.
 #[tauri::command]
-async fn days_text(from_ms: u64) -> String {
-    i64::try_from(from_ms)
+async fn days_text(from_ms: u64, dir: tauri::State<'_, DataDir>) -> Result<String, String> {
+    Ok(i64::try_from(from_ms)
         .ok()
         .and_then(|ms| Local.timestamp_millis_opt(ms).earliest())
-        .map(|t| store::days_text(&store::data_dir(), t.date_naive()))
-        .unwrap_or_default()
+        .map(|t| store::days_text(&dir.0, t.date_naive()))
+        .unwrap_or_default())
 }
 
 /// The saved city snapshot as JSON text; empty if none has been saved.
 #[tauri::command]
-async fn load_snapshot() -> String {
-    store::load_snapshot(&store::data_dir())
+async fn load_snapshot(dir: tauri::State<'_, DataDir>) -> Result<String, String> {
+    Ok(store::load_snapshot(&dir.0))
 }
 
 #[tauri::command]
-async fn save_snapshot(json: String) -> Result<(), String> {
-    store::save_snapshot(&store::data_dir(), &json).map_err(|e| e.to_string())
+async fn save_snapshot(json: String, dir: tauri::State<'_, DataDir>) -> Result<(), String> {
+    store::save_snapshot(&dir.0, &json).map_err(|e| e.to_string())
 }
 
 /// `[x, y, w, h]` of the union of the active displays, in the cursor's points.
@@ -66,8 +71,14 @@ pub fn run() {
             capture_source
         ])
         .setup(|app| {
+            // First launch on a machine: the folder does not exist yet, and the city starts empty.
+            let dir = app.path().app_data_dir()?;
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("could not create {}: {e}", dir.display());
+            }
+            app.manage(DataDir(dir.clone()));
             let handle = app.handle().clone();
-            let source = capture::start(move |records| {
+            let source = capture::start(dir, move |records| {
                 let _ = handle.emit("touches", records);
             })
             .unwrap_or_else(|e| {
