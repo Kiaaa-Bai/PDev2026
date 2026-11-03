@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { cellKey, type CitySim } from "../sims/city";
-import { patchPalette, readTexel, ROOF_TEXEL } from "./palette-shader";
+import { AMBIENT_DAY, skyAt, type SkyState, SUN_DAY } from "./looks";
+import { type NightUniform, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
 import { layoutCells, layoutKey, MODEL_NAMES, ROLLER, type Looks } from "./pieces";
 
 const urls = import.meta.glob("../assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
@@ -67,6 +68,13 @@ export class CityView3D {
   private models = new Map<string, Model>();
   private meshes = new Map<string, THREE.InstancedMesh>();
   private roller!: THREE.Mesh;
+  private hemisphere: THREE.HemisphereLight;
+  private sunLight: THREE.DirectionalLight;
+  /** How lit the windows are, shared by every model's material. */
+  private night: NightUniform = { value: 0 };
+  /** The sky last put on the lights, the clock and the windows, and the minute it was looked up in. */
+  private sky: SkyState | null = null;
+  private skyMinute = NaN;
   /** What the instances were last built for (roller cell, city version, 5 s bucket), and a hash of what that put on screen. */
   private builtFor = "";
   private builtKey: number | null = null;
@@ -75,33 +83,36 @@ export class CityView3D {
   private stale = true;
   private lastRender = -Infinity;
 
+  /** `clock` tells the time of day the sky follows; it is a parameter so a test or the dev page can show another hour. */
   constructor(
     private sim: CitySim,
     private width: number,
     private height: number,
+    private clock: () => Date = () => new Date(),
   ) {
     // Lambert shading, no shadows, no antialiasing: the cheapest picture that still reads as 3D.
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
     this.renderer.setPixelRatio(PIXEL_RATIO);
     this.renderer.setSize(width, height);
-    this.renderer.setClearColor(0x9fd3e8);
     this.canvas = this.renderer.domElement;
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     this.setHalfHeight(DEFAULT_HALF_HEIGHT);
-    this.scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x6a8a50, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.8);
-    sun.position.set(4, 10, 2);
-    this.scene.add(sun);
+    this.hemisphere = new THREE.HemisphereLight(0xe8f4ff, 0x6a8a50, AMBIENT_DAY);
+    this.scene.add(this.hemisphere);
+    this.sunLight = new THREE.DirectionalLight(0xffffff, SUN_DAY);
+    this.sunLight.position.set(4, 10, 2);
+    this.scene.add(this.sunLight);
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshLambertMaterial({ color: 0x8ccf68 }));
     this.ground.rotation.x = -Math.PI / 2;
     this.scene.add(this.ground);
+    this.updateSky();
   }
 
   /** Loads every model; call once before the first update. */
   async load(): Promise<void> {
     const loader = new GLTFLoader();
     await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(loader, n))));
-    this.colourRoofs();
+    this.patchMaterials();
     const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
     this.roller.scale.setScalar(ROLLER.scale);
@@ -109,13 +120,39 @@ export class CityView3D {
     this.invalidate();
   }
 
-  /** Suburban houses swap their roof green for the colour of each instance; every other model is left as it is. */
-  private colourRoofs(): void {
-    const suburban = [...this.models].filter(([name]) => name.startsWith("suburban/")).map(([, m]) => m);
+  /**
+   * Suburban houses swap their roof green for the colour of each instance, and light their windows at
+   * night; commercial buildings only light their windows. Every other model is left as it is.
+   */
+  private patchMaterials(): void {
+    const of = (prefix: string) => [...this.models].filter(([name]) => name.startsWith(prefix)).map(([, m]) => m);
+    const suburban = of("suburban/");
     const image = suburban[0]?.map?.image as (CanvasImageSource & { width: number; height: number }) | undefined;
     if (!image) throw new Error("suburban models have no palette texture");
     const roofTexel = readTexel(image, ROOF_TEXEL.x, ROOF_TEXEL.y);
-    for (const m of suburban) patchPalette(m.mat, roofTexel);
+    for (const m of suburban) patchPalette(m.mat, roofTexel, this.night);
+    for (const m of of("commercial/")) patchWindows(m.mat, this.night);
+  }
+
+  /**
+   * Look up the sky for the time of day, once in each minute of the clock, and put it on the clear
+   * colour, the two lights and the windows. Returns true when that is different from what was drawn:
+   * it stays the same through the full day and the full night, so a parked city is not redrawn.
+   */
+  private updateSky(): boolean {
+    const d = this.clock();
+    const minute = Math.floor(d.getTime() / 60_000);
+    if (minute === this.skyMinute) return false;
+    this.skyMinute = minute;
+    const s = skyAt(d);
+    const was = this.sky;
+    if (was && s.sky === was.sky && s.sun === was.sun && s.ambient === was.ambient && s.night === was.night) return false;
+    this.sky = s;
+    this.renderer.setClearColor(s.sky);
+    this.sunLight.intensity = s.sun;
+    this.hemisphere.intensity = s.ambient;
+    this.night.value = s.night;
+    return true;
   }
 
   /** Show a different city (the dev page starts over or loads a recording). */
@@ -208,6 +245,7 @@ export class CityView3D {
     const at = this.sim.rollerAt();
     const move = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir}`;
     let changed = this.stale || move !== this.lastMove;
+    if (this.updateSky()) changed = true;
     // Check the surroundings when the roller has moved a few cells, the city changed, or every 5 s
     // (a house can age into a bigger one). It only counts as a change if what is drawn differs.
     const cellSig = `${Math.round(at.x / 4)},${Math.round(at.y / 4)},${this.sim.version},${Math.floor(t / 5000)}`;

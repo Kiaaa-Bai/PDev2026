@@ -16,8 +16,18 @@ interface World {
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 const host = document.querySelector<HTMLElement>("#panels")!;
 
+/** Dev only: `?hour=22` (or `?hour=19.5`) shows the city at that time of day, whatever the clock says. */
+const hour = parseFloat(new URLSearchParams(location.search).get("hour") ?? "");
+const clock = Number.isFinite(hour)
+  ? () => {
+      const d = new Date();
+      d.setHours(Math.floor(hour), Math.round((hour % 1) * 60), 0, 0);
+      return d;
+    }
+  : undefined;
+
 async function boot() {
-  const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H);
+  const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H, clock);
   await view.load();
   const panel = createPanel(host, "City", view.canvas);
 
