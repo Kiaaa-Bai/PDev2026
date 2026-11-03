@@ -2,7 +2,7 @@ import { CITY_RULES_VERSION } from "../config";
 import type { Point } from "../data";
 import { Rng } from "../rng";
 import { isSnapshot, type CitySnapshot } from "./city-snapshot";
-import { isUnlocked, kindFor, neighboursAt, type Kind } from "./kinds";
+import { isUnlocked, JOBS, kindFor, neighboursAt, RESIDENTS, type Demand, type Kind } from "./kinds";
 import { headingFor } from "./steer";
 import type { Sim } from "./types";
 
@@ -57,6 +57,11 @@ export class CitySim implements Sim {
   readonly kinds = new Map<string, Kind>();
   /** True while the one landmark stands; the roller flattening it clears this, so a later lot can be the landmark. */
   landmarkPlaced = false;
+  /**
+   * Residents and jobs of every lot there is, at tier-3 capacity. Kept as the lots come and go, so a new lot
+   * costs nothing to compare; a restored city counts it again from the kinds.
+   */
+  private need: Demand = { residents: 0, jobs: 0 };
   readonly roller = { x: 0, y: 0, dir: 0 as Dir, progress: 0 };
   driven = 0;
   /** Length of the pointer's path in screen points, summed over every stroke. */
@@ -147,7 +152,10 @@ export class CitySim implements Sim {
     const sim = new CitySim(cfg);
     for (const [k, n] of s.road) sim.road.set(k, n);
     for (const [k, t] of s.lots) sim.lots.set(k, t);
-    for (const [k, kind] of s.kinds) sim.kinds.set(k, kind);
+    for (const [k, kind] of s.kinds) {
+      sim.kinds.set(k, kind);
+      sim.count(kind, 1);
+    }
     sim.landmarkPlaced = s.landmark;
     sim.roller.x = s.roller.x;
     sim.roller.y = s.roller.y;
@@ -185,6 +193,14 @@ export class CitySim implements Sim {
   /** The kind of building on the lot at (x, y), or undefined where there is no lot. */
   lotKind(x: number, y: number): Kind | undefined {
     return this.kinds.get(cellKey(x, y));
+  }
+
+  /**
+   * The city's residents and jobs, each lot counted at its tier-3 capacity so the sum does not drift as houses
+   * age. A copy: the city keeps counting as lots are made and flattened.
+   */
+  demand(): Demand {
+    return { ...this.need };
   }
 
   /** 0 for no house yet, else the house's tier at time t. */
@@ -255,7 +271,11 @@ export class CitySim implements Sim {
     const k = cellKey(x, y);
     this.road.set(k, (this.road.get(k) ?? 0) + 1);
     this.lots.delete(k);
-    if (this.kinds.get(k) === "landmark") this.landmarkPlaced = false;
+    const flattened = this.kinds.get(k);
+    if (flattened !== undefined) {
+      if (flattened === "landmark") this.landmarkPlaced = false;
+      this.count(flattened, -1);
+    }
     this.kinds.delete(k);
     const [lo, hi] = this.cfg.lotDelayMs;
     for (let d = 0; d < 4; d++) {
@@ -267,16 +287,20 @@ export class CitySim implements Sim {
       // three draws for every new lot, whatever is unlocked, so what the draws decide never depends on the thresholds
       const ready = t + lo + this.rng.next() * (hi - lo);
       const roll = this.rng.next();
-      this.kinds.set(nk, this.kindOfNewLot(lx, ly, roll));
+      const kind = this.kindOfNewLot(lx, ly, roll);
+      this.kinds.set(nk, kind);
+      this.count(kind, 1);
       this.lots.set(nk, ready);
     }
     this.version++;
   }
 
   /**
-   * The kind of the lot about to be made at (x, y), from what is around it and the distance now. Once it
-   * is unlocked, the first lot made beside road that was driven `wideRoadAt` times is the landmark; there is
-   * at most one landmark at a time, and a flattened one can be replaced by a later lot.
+   * The kind of the lot about to be made at (x, y), from what is around it, the distance now and the city's
+   * demand. Once it is unlocked, the first lot made beside road that was driven `wideRoadAt` times is the
+   * landmark; there is at most one landmark at a time, and a flattened one can be replaced by a later lot.
+   * Any other lot is `kindFor`'s: it reads the demand before this lot is counted, and an avenue is the same
+   * road as the landmark's, driven `wideRoadAt` times.
    */
   private kindOfNewLot(x: number, y: number, roll: number): Kind {
     if (!this.landmarkPlaced && isUnlocked("landmark", this.distance) && this.besideWideRoad(x, y)) {
@@ -289,7 +313,13 @@ export class CitySim implements Sim {
       x,
       y,
     );
-    return kindFor(n, this.distance, roll);
+    return kindFor(n, this.distance, roll, this.need, this.besideWideRoad(x, y));
+  }
+
+  /** Adds (`sign` 1) or takes away (-1) a lot of `kind` from the residents and jobs. */
+  private count(kind: Kind, sign: 1 | -1): void {
+    if (kind in RESIDENTS) this.need.residents += sign * RESIDENTS[kind as keyof typeof RESIDENTS][2];
+    if (kind in JOBS) this.need.jobs += sign * JOBS[kind as keyof typeof JOBS];
   }
 
   private besideWideRoad(x: number, y: number): boolean {

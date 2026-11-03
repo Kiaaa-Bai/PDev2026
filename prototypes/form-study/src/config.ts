@@ -3,7 +3,7 @@ import type { FarmConfig } from "./sims/farm";
 import type { MonsterConfig } from "./sims/monster";
 
 /** Bump when the city's rules change, so an old snapshot is dropped and the days are replayed. */
-export const CITY_RULES_VERSION = 3;
+export const CITY_RULES_VERSION = 4;
 
 export const CITY: CityConfig = {
   speed: 1,

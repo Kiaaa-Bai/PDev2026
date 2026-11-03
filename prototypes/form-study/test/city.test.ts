@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CITY_RULES_VERSION } from "../src/config";
 import { CitySim, cellKey, roadMaskAt, type CityConfig } from "../src/sims/city";
-import { kindFor, neighboursAt, UNLOCKS, type Kind } from "../src/sims/kinds";
+import { JOBS, kindFor, neighboursAt, RESIDENTS, UNLOCKS, type Kind } from "../src/sims/kinds";
 
 const cfg: CityConfig = {
   speed: 1,
@@ -31,6 +31,34 @@ function swipe(sim: CitySim, t: number, dx = 0, dy = 0) {
 const PUSH = { E: [100, 50], S: [-100, 50], W: [-100, -50], N: [100, -50] } as const;
 
 const roads = (sim: CitySim) => [...sim.road.keys()].sort();
+
+const through = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+/** What the lots hold, counted from the kinds at tier-3 capacity: the number demand() must always equal. */
+const counted = (kinds: Iterable<Kind>) => {
+  let residents = 0;
+  let jobs = 0;
+  for (const k of kinds) {
+    if (k in RESIDENTS) residents += RESIDENTS[k as keyof typeof RESIDENTS][2];
+    if (k in JOBS) jobs += JOBS[k as keyof typeof JOBS];
+  }
+  return { residents, jobs };
+};
+/**
+ * A city that already holds one lot of each given kind, far from the roller, made through the snapshot path so its
+ * demand is counted from them. It lets a test start from any demand: a few offices keep a new city "in balance".
+ */
+function cityOf(c: CityConfig, kinds: Kind[]): CitySim {
+  const snap = through(new CitySim(c).snapshot());
+  kinds.forEach((kind, i) => {
+    const k = cellKey(1000 + i, 1000);
+    snap.lots.push([k, 0]);
+    snap.kinds.push([k, kind]);
+  });
+  return CitySim.restore(c, snap)!;
+}
+const times = (n: number, kind: Kind): Kind[] => Array.from({ length: n }, () => kind);
+/** Enough jobs that a small test city never runs short of work, so a new lot is a workplace with the usual chance. */
+const BALANCED = times(20, "office");
 
 describe("CitySim roller", () => {
   it("stays parked until the first touch", () => {
@@ -294,7 +322,7 @@ describe("CitySim kinds", () => {
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
   it("bumps the rules version, since kinds change what a city grows", () => {
-    expect(CITY_RULES_VERSION).toBe(3);
+    expect(CITY_RULES_VERSION).toBe(4);
   });
 
   it("gives every lot a kind, stored apart from the time its house appears", () => {
@@ -312,26 +340,62 @@ describe("CitySim kinds", () => {
     expect(sim.lotKind(0, 0)).toBeUndefined(); // a road, not a lot
   });
 
+  const isWork = (k: Kind | undefined) => k === "shop" || k === "office";
+
   it("starts out with detached houses at the head of a road and houses behind them", () => {
-    const sim = new CitySim(cfg);
-    swipe(sim, 1000);
-    sim.advanceTo(3500);
-    // the first lot on each side has nothing beside it, the next ones have the lot behind
-    expect(kindsAt(sim, [0, -1], [0, 1])).toEqual(["detached", "detached"]);
-    expect(kindsAt(sim, [1, -1], [2, -1], [1, 1], [2, 1])).toEqual(["house", "house", "house", "house"]);
+    // a lot whose roll makes it a workplace is not what this is about, so look at the seeds whose lots all are homes
+    let checked = 0;
+    for (let seed = 1; seed <= 40 && checked < 5; seed++) {
+      const sim = cityOf({ ...cfg, seed }, BALANCED);
+      swipe(sim, 1000);
+      sim.advanceTo(3500);
+      const cells: [number, number][] = [[0, -1], [0, 1], [1, -1], [2, -1], [1, 1], [2, 1]];
+      if (kindsAt(sim, ...cells).some(isWork)) continue;
+      checked++;
+      // the first lot on each side has nothing beside it, the next ones have the lot behind
+      expect(kindsAt(sim, [0, -1], [0, 1]), `seed ${seed}`).toEqual(["detached", "detached"]);
+      expect(kindsAt(sim, [1, -1], [2, -1], [1, 1], [2, 1]), `seed ${seed}`).toEqual(["house", "house", "house", "house"]);
+    }
+    expect(checked).toBe(5);
   });
 
-  it("makes a lot between two lots along its road a row", () => {
-    const sim = startWith(0, [], [[-1, -1], [1, -1]]);
-    expect(sim.lotKind(0, -1)).toBe("row");
+  it("makes a lot between two lots along its road a row, unless it is a workplace", () => {
+    let rows = 0;
+    let work = 0;
+    for (let seed = 1; seed <= 60; seed++) {
+      const sim = cityOf({ ...cfg, seed }, BALANCED);
+      sim.lots.set("-1,-1", 0);
+      sim.kinds.set("-1,-1", "house");
+      sim.lots.set("1,-1", 0);
+      sim.kinds.set("1,-1", "house");
+      swipe(sim, 1000);
+      const kind = sim.lotKind(0, -1);
+      if (isWork(kind)) work++;
+      else {
+        expect(kind, `seed ${seed}`).toBe("row");
+        rows++;
+      }
+    }
+    expect(rows).toBeGreaterThan(40);
+    expect(work).toBeGreaterThan(0);
   });
 
-  it("makes a lot beside road on two sides a shop once shops are unlocked, and a house before", () => {
+  it("makes a lot beside road on two sides a shop when it is a workplace, a plain house when it is not, at any distance", () => {
     // a road already at (1, 1): the lots at (1, 0) and (0, 1) touch it and the new road at (0, 0)
-    const before = startWith(unlockAt("shop") - 1, [[1, 1]]);
-    expect(kindsAt(before, [1, 0], [0, 1])).toEqual(["house", "house"]);
-    const after = startWith(unlockAt("shop"), [[1, 1]]);
-    expect(kindsAt(after, [1, 0], [0, 1])).toEqual(["shop", "shop"]);
+    for (const [distance, plain] of [[0, "house"], [unlockAt("apartment") - 1, "house"], [unlockAt("apartment"), "apartment"]] as const) {
+      const seen: (Kind | undefined)[] = [];
+      for (let seed = 1; seed <= 40; seed++) {
+        const sim = cityOf({ ...cfg, seed }, BALANCED);
+        sim.distance = distance;
+        sim.road.set("1,1", 1);
+        swipe(sim, 1000);
+        seen.push(...kindsAt(sim, [1, 0], [0, 1]));
+      }
+      for (const k of seen) expect([`shop`, plain], `at ${distance}`).toContain(k);
+      const share = seen.filter((k) => k === "shop").length / seen.length;
+      expect(share, `at ${distance}`).toBeGreaterThan(0.02);
+      expect(share, `at ${distance}`).toBeLessThan(0.25);
+    }
   });
 
   it("does not count a road beside the lot as a lot", () => {
@@ -387,7 +451,7 @@ describe("CitySim kinds", () => {
     const sim = new CitySim(wild);
     sim.distance = unlockAt("landmark");
     wander(sim);
-    expect([...new Set(sim.kinds.values())].sort()).toEqual(["apartment", "detached", "landmark", "park", "row", "shop"]);
+    expect([...new Set(sim.kinds.values())].sort()).toEqual(["apartment", "detached", "landmark", "office", "park", "row", "shop"]);
   });
 
   it("keeps a lot's kind when neighbours arrive later", () => {
@@ -401,7 +465,7 @@ describe("CitySim kinds", () => {
     // (0, -1) now has a lot on each side along its street, which would make it a row ...
     const now = neighboursAt((x, y) => sim.hasRoad(x, y), (x, y) => sim.lots.has(cellKey(x, y)), 0, -1);
     expect(now.lotsAlongRoad).toBe(2);
-    expect(kindFor(now, 0, 0.9)).toBe("row");
+    expect(kindFor(now, 0, 0.9, sim.demand(), false)).toBe("row");
     // ... but it was made detached, and stays so
     expect(sim.lotKind(0, -1)).toBe("detached");
   });
@@ -411,7 +475,9 @@ describe("CitySim kinds", () => {
     swipe(sim, 1000);
     sim.advanceTo(3500);
     const before = kinds(sim);
-    expect(new Set(before.map(([, kind]) => kind))).toEqual(new Set(["detached", "house"]));
+    // houses and workplaces only: nothing that waits for distance
+    expect([...new Set(before.map(([, kind]) => kind))].every((kind) => ["detached", "house", "office", "shop"].includes(kind))).toBe(true);
+    expect(before.some(([, kind]) => kind === "house")).toBe(true);
     sim.distance = unlockAt("landmark");
     swipe(sim, 3500, ...PUSH.S);
     sim.advanceTo(9000);
@@ -436,7 +502,8 @@ describe("CitySim kinds", () => {
       const sim = startWith(unlockAt("landmark"), [[1, 1, 3]]);
       expect(sim.lotKind(1, 0)).toBe("landmark"); // made first, in the order east, south, west, north
       expect(sim.landmarkPlaced).toBe(true);
-      expect(sim.lotKind(0, 1)).toBe("shop"); // a corner lot, and the landmark is taken
+      expect(sim.lotKind(0, 1)).toBeDefined(); // a corner lot, and the landmark is taken
+      expect(sim.lotKind(0, 1)).not.toBe("landmark");
     });
 
     it("is not placed before it is unlocked, nor beside road driven only twice", () => {
@@ -508,6 +575,134 @@ describe("CitySim kinds", () => {
   });
 });
 
+describe("CitySim demand and workplaces", () => {
+  const unlockAt = (kind: Kind) => UNLOCKS.find((u) => u.kind === kind)!.at;
+
+  it("starts at nothing", () => {
+    expect(new CitySim(cfg).demand()).toEqual({ residents: 0, jobs: 0 });
+  });
+
+  it("counts every lot at its tier-3 capacity, so it does not drift as houses grow", () => {
+    const sim = cityOf(cfg, ["house", "row", "detached", "apartment", "park", "shop", "office", "landmark"]);
+    expect(sim.demand()).toEqual({ residents: 6 + 3 + 4 + 20, jobs: 4 + 12 + 30 });
+    // no time argument, and the same at any hour: the houses may be tier 1 now
+    expect(sim.houseTier(1000, 1000, 0)).toBe(1);
+    expect(sim.demand()).toEqual({ residents: 33, jobs: 46 });
+  });
+
+  it("counts the lots the roller makes, and takes them back when it flattens them", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000);
+    sim.advanceTo(3500);
+    expect(sim.lots.size).toBeGreaterThan(4);
+    expect(sim.demand()).toEqual(counted(sim.kinds.values()));
+    expect(sim.demand().residents).toBeGreaterThan(0);
+    const before = new Set(sim.kinds.keys());
+    swipe(sim, 3500, ...PUSH.S); // south, through the lots in its way
+    sim.advanceTo(9000);
+    expect([...before].filter((k) => !sim.lots.has(k)).length).toBeGreaterThan(0); // some were flattened
+    expect(sim.demand()).toEqual(counted(sim.kinds.values()));
+  });
+
+  it("takes back a flattened landmark's jobs, and counts the one that rises in its place", () => {
+    const sim = new CitySim(cfg);
+    sim.distance = unlockAt("landmark");
+    sim.road.set("1,1", 3);
+    swipe(sim, 1000); // the lot at (1, 0) beside the wide road becomes the landmark
+    expect(sim.lotKind(1, 0)).toBe("landmark");
+    expect(sim.demand()).toEqual(counted(sim.kinds.values()));
+    expect(sim.demand().jobs).toBeGreaterThanOrEqual(JOBS.landmark);
+    sim.advanceTo(2500); // over (1, 0): the landmark is gone
+    expect(sim.lotKind(1, 0)).toBeUndefined();
+    expect([...sim.kinds.values()]).not.toContain("landmark");
+    expect(sim.demand()).toEqual(counted(sim.kinds.values()));
+    sim.advanceTo(5000); // and the next qualifying lot is the landmark
+    expect([...sim.kinds.values()].filter((k) => k === "landmark")).toHaveLength(1);
+    expect(sim.demand()).toEqual(counted(sim.kinds.values()));
+  });
+
+  it("is counted again from the kinds when a snapshot is restored, and matches the city it came from", () => {
+    const sim = new CitySim({ ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 });
+    sim.distance = unlockAt("landmark");
+    let t = 1000;
+    for (const p of [PUSH.E, PUSH.S, PUSH.W, PUSH.N, PUSH.E, PUSH.S, PUSH.S, PUSH.W]) swipe(sim, (t += 7000), ...p);
+    sim.advanceTo(t + 60_000);
+    expect(sim.demand().residents).toBeGreaterThan(50);
+    expect(sim.demand().jobs).toBeGreaterThan(0);
+    const restored = CitySim.restore(cfg, through(sim.snapshot()))!;
+    expect(restored.demand()).toEqual(sim.demand());
+    expect(restored.demand()).toEqual(counted(restored.kinds.values()));
+  });
+
+  it("makes about half of the new lots workplaces while residents outnumber jobs by more than 20%", () => {
+    const c: CityConfig = { ...cfg, idleStopMs: 300_000, slowMs: 10_000, lotChance: 1 };
+    const sim = cityOf(c, times(2000, "house")); // 12,000 residents and no jobs
+    swipe(sim, 1000);
+    sim.advanceTo(300_000);
+    const made = [...sim.kinds].filter(([k]) => Math.abs(Number(k.split(",")[1])) <= 1);
+    expect(made.length).toBeGreaterThan(500);
+    const share = made.filter(([, k]) => k === "shop" || k === "office").length / made.length;
+    expect(share).toBeGreaterThan(0.42);
+    expect(share).toBeLessThan(0.58);
+  });
+
+  it("makes about a tenth of the new lots workplaces while jobs keep up", () => {
+    const c: CityConfig = { ...cfg, idleStopMs: 300_000, slowMs: 10_000, lotChance: 1 };
+    const sim = cityOf(c, [...times(2000, "house"), ...times(1200, "office")]); // 12,000 residents, 14,400 jobs
+    swipe(sim, 1000);
+    sim.advanceTo(300_000);
+    const made = [...sim.kinds].filter(([k]) => Math.abs(Number(k.split(",")[1])) <= 1);
+    expect(made.length).toBeGreaterThan(500);
+    const share = made.filter(([, k]) => k === "shop" || k === "office").length / made.length;
+    expect(share).toBeGreaterThan(0.06);
+    expect(share).toBeLessThan(0.15);
+  });
+
+  it("makes a workplace beside an avenue a shop, and one beside an ordinary street an office", () => {
+    // (0, -1) has the new road at (0, 0) to its south and the old road at (0, -2) to its north: not a corner
+    const run = (seed: number, drivenAt: number) => {
+      const sim = cityOf({ ...cfg, seed }, times(100, "house")); // short of jobs: half the lots are workplaces
+      sim.road.set("0,-2", drivenAt);
+      swipe(sim, 1000);
+      return sim.lotKind(0, -1)!;
+    };
+    let offices = 0;
+    let rest = 0;
+    for (let seed = 1; seed <= 80; seed++) {
+      const ordinary = run(seed, 1);
+      const avenue = run(seed, 3);
+      expect(ordinary).not.toBe("shop");
+      if (ordinary === "office") {
+        offices++;
+        expect(avenue, `seed ${seed}`).toBe("shop"); // the same roll, a workplace either way: only the position differs
+      } else {
+        rest++;
+        expect(avenue, `seed ${seed}`).toBe(ordinary);
+      }
+    }
+    expect(offices).toBeGreaterThan(15);
+    expect(rest).toBeGreaterThan(15);
+  });
+
+  it("draws the same three numbers for every lot whatever the demand: roads, lots and the generator do not change", () => {
+    const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
+    const run = (kinds: Kind[]) => {
+      const sim = cityOf(wild, kinds);
+      let t = 1000;
+      for (const p of [PUSH.E, PUSH.E, PUSH.S, PUSH.W, PUSH.N, PUSH.E, PUSH.S, PUSH.S, PUSH.W, PUSH.N]) swipe(sim, (t += 6000), ...p);
+      sim.advanceTo(t + 60_000);
+      return sim;
+    };
+    const short = run(times(400, "house")); // no jobs at all
+    const jobs = run(times(400, "office")); // no residents at all
+    expect(short.lots.size).toBeGreaterThan(100);
+    expect([...jobs.road]).toEqual([...short.road]);
+    expect([...jobs.lots]).toEqual([...short.lots]);
+    expect(jobs.snapshot().rng).toBe(short.snapshot().rng);
+    expect([...jobs.kinds]).not.toEqual([...short.kinds]);
+  });
+});
+
 describe("CitySim snapshot", () => {
   /** Forty swipes that turn or just tap, with gaps long enough for the roller to park partway between cells. */
   const script = (() => {
@@ -528,6 +723,7 @@ describe("CitySim snapshot", () => {
     lots: [...sim.lots.entries()].sort(),
     kinds: [...sim.kinds.entries()].sort(),
     landmarkPlaced: sim.landmarkPlaced,
+    demand: sim.demand(),
     roller: sim.roller,
     driven: sim.driven,
     distance: sim.distance,
@@ -586,6 +782,7 @@ describe("CitySim snapshot", () => {
     expect(snap.rules).toBe(CITY_RULES_VERSION);
     expect(CitySim.restore(busy, { ...snap, rules: CITY_RULES_VERSION + 1 })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, rules: CITY_RULES_VERSION - 1 })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, rules: 3 })).toBeNull(); // the version before workplaces
     const { rules: _gone, ...noRules } = snap;
     expect(CitySim.restore(busy, noRules)).toBeNull();
   });
@@ -628,6 +825,9 @@ describe("CitySim snapshot", () => {
     expect(CitySim.restore(busy, noKinds)).toBeNull();
     expect(CitySim.restore(busy, { ...snap, kinds: "house" })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, kinds: [["0,1", "tower"]] })).toBeNull();
+    // an office is a real kind
+    const withOffice = { ...snap, lots: [["5,5", 0]], kinds: [["5,5", "office"]] };
+    expect(CitySim.restore(busy, withOffice)?.lotKind(5, 5)).toBe("office");
     expect(CitySim.restore(busy, { ...snap, kinds: [["0,1", 3]] })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, kinds: snap.kinds.slice(1) })).toBeNull();
     const { landmark: _landmark, ...noLandmark } = snap;

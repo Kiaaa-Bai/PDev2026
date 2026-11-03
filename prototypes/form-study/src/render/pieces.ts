@@ -158,6 +158,8 @@ export function buildingPlacements(kind: Kind, tier: 1 | 2 | 3, x: number, y: nu
       return [house(DETACHED_SCALE), ...GARDEN.map(([a, d, s]) => onLot(x, y, turns, a, d, GARDEN_TREE, s))];
     case "shop":
       return [commercialOne(pick(SHOP_POOL, x, y))];
+    case "office":
+      return [commercialOne(pick(BLOCK_POOL, x, y))]; // a commercial block from the day it is built; Task 3 may choose its look
     case "apartment":
       return tier < 3 ? [house(HOUSE_SCALE[tier - 1])] : [commercialOne(pick(BLOCK_POOL, x, y))];
     case "landmark":

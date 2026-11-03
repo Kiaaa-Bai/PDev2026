@@ -543,14 +543,24 @@ describe("building kinds", () => {
     }
   });
 
-  it("uses commercial models only for shops, tier 3 apartments and the landmark", () => {
-    for (const kind of KINDS) {
+  it("uses commercial models only for shops, offices, tier 3 apartments and the landmark", () => {
+    for (const kind of [...KINDS, "office" as const]) {
       for (const tier of TIERS) {
         const commercial = lot(kind, tier).some((p) => family(p.model) === "commercial");
-        const should = kind === "shop" || kind === "landmark" || (kind === "apartment" && tier === 3);
+        const should = kind === "shop" || kind === "office" || kind === "landmark" || (kind === "apartment" && tier === 3);
         expect(commercial, `${kind} ${tier}`).toBe(should);
       }
     }
+  });
+
+  it("draws an office as a commercial block from the day it is built, whatever the tier (its own look is for later)", () => {
+    for (const tier of TIERS) {
+      const placed = lot("office", tier);
+      expect(placed).toHaveLength(1);
+      expect(BLOCK_POOL).toContain(placed[0].model);
+      expect(placed[0].colour).toBe(WHITE);
+    }
+    expect(new Set(TIERS.map((t) => layoutKey(lot("office", t)))).size).toBe(1); // it does not grow
   });
 
   it("is the same through buildingPlacements as through layoutCells", () => {
