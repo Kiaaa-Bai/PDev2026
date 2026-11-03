@@ -34,6 +34,7 @@ import {
   type Placement,
   type Turns,
 } from "../src/render/pieces";
+import { PANEL_H, PANEL_W } from "../src/render/panel";
 import { LANE_TINT, ROOF_COLOURS, roofBand, roofColour, WHITE } from "../src/render/looks";
 import { CitySim, DX, DY, cellKey, type CityConfig } from "../src/sims/city";
 import type { Kind } from "../src/sims/kinds";
@@ -635,13 +636,56 @@ describe("zoom", () => {
     expect(clampHalfHeight(1000)).toBe(60);
   });
 
-  it("builds ceil(halfHeight * 512/348) + 2 cells around the roller, at least 30 and at most 120", () => {
-    expect(viewRadius(5)).toBe(30); // the close-up radius it has always had
-    expect(viewRadius(15)).toBe(30); // ceil(22.07) + 2 = 25, lifted to the floor
-    expect(viewRadius(20)).toBe(32);
-    expect(viewRadius(60)).toBe(91);
+  it("builds ceil(halfHeight * 2.55) + 2 cells around the roller, at least 30 and at most 120", () => {
+    expect(viewRadius(5)).toBe(30); // ceil(12.75) + 2 = 15, lifted to the close-up's 30
+    expect(viewRadius(12)).toBe(33);
+    expect(viewRadius(20)).toBe(53);
+    expect(viewRadius(46)).toBe(120);
+    expect(viewRadius(60)).toBe(120); // ceil(153) + 2 = 155, held to the cap
     expect(viewRadius(1000)).toBe(120);
     expect(viewRadius(Infinity)).toBe(120);
+  });
+
+  describe("what the camera sees", () => {
+    // The camera is 30 degrees above the ground and turned 45 degrees, and the picture is the panel's 512 x 320.
+    const ASPECT = PANEL_W / PANEL_H;
+    const S = Math.SQRT1_2;
+    /** Whether the cell (dx, dy) from the roller is inside the picture at half-height h. */
+    const onScreen = (dx: number, dy: number, h: number) => {
+      const across = (dx - dy) * S;
+      const away = -(dx + dy) * S; // along the ground, away from the camera
+      return Math.abs(across) <= ASPECT * h && Math.abs(away) * Math.sin(Math.PI / 6) <= h;
+    };
+
+    it("is built out to every corner of the picture, at every zoom the cap allows", () => {
+      for (let h = MIN_HALF_HEIGHT; h <= 46; h += 0.5) {
+        // the picture's corners are ASPECT * h across and 2 * h along the ground (a tile's depth is halved at 30 degrees)
+        const reach = Math.max(...[-1, 1].flatMap((a) => [-1, 1].map((f) => Math.abs(S * (a * ASPECT * h - f * 2 * h)))));
+        expect(Math.ceil(reach), `half-height ${h}`).toBeLessThanOrEqual(viewRadius(h));
+      }
+    });
+
+    it("leaves almost no visible cell undrawn with the roller at a city's corner at full zoom out", () => {
+      // a 121 x 118 city with the roller at one corner: the case that left a third of the picture bare
+      const undrawn = (radius: number) => {
+        let seen = 0;
+        let bare = 0;
+        for (let y = 0; y <= 117; y++) {
+          for (let x = 0; x <= 120; x++) {
+            if (!onScreen(x, y, MAX_HALF_HEIGHT)) continue;
+            seen++;
+            if (Math.max(x, y) > radius) bare++;
+          }
+        }
+        return { seen, bare };
+      };
+      const now = undrawn(viewRadius(MAX_HALF_HEIGHT));
+      expect(now.seen).toBeGreaterThan(5000);
+      expect(now.bare / now.seen).toBeLessThanOrEqual(0.01);
+      // and the check does see a shortfall: at the radius this view once had (91) over a fifth of what is visible was bare
+      const before = undrawn(91);
+      expect(before.bare / before.seen).toBeGreaterThan(0.2);
+    });
   });
 
   it("builds more as the view widens, and never less than the close-up radius", () => {

@@ -231,10 +231,12 @@ export const MAX_HALF_HEIGHT = 60;
 export const clampHalfHeight = (h: number): number => Math.min(MAX_HALF_HEIGHT, Math.max(MIN_HALF_HEIGHT, h));
 
 /**
- * How many cells around the roller to build for a camera `halfHeight` tiles tall: the view's width in tiles
- * (the window is 512 wide and 348 tall), two more, never fewer than the close-up's 30 and never more than 120.
+ * How many cells around the roller to build for a camera `halfHeight` tiles tall: enough to fill the picture to its
+ * corners (at 1.6 wide a corner is 2.55 x halfHeight cells from the roller along an axis: the picture is 1.6 x
+ * halfHeight across and, at 30 degrees up, 2 x halfHeight deep along the ground, then turned 45 degrees), two
+ * more, never fewer than the close-up's 30 and never more than 120.
  */
-export const viewRadius = (halfHeight: number): number => Math.min(120, Math.max(30, Math.ceil((halfHeight * 512) / 348) + 2));
+export const viewRadius = (halfHeight: number): number => Math.min(120, Math.max(30, Math.ceil(halfHeight * 2.55) + 2));
 
 /** How much one unit of wheel delta scales the half-height (as the exponent of e): a pinch much more than a scroll. */
 const PINCH_RATE = 0.01;
