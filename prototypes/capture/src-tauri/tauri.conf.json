@@ -15,7 +15,7 @@
       {
         "title": "Trackpad",
         "width": 512,
-        "height": 348,
+        "height": 380,
         "resizable": false,
         "alwaysOnTop": true,
         "url": "window.html"
