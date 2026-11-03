@@ -1,5 +1,7 @@
+import { CITY_RULES_VERSION } from "../config";
 import type { Point } from "../data";
-import { mulberry32 } from "../rng";
+import { Rng } from "../rng";
+import { isSnapshot, type CitySnapshot } from "./city-snapshot";
 import { headingFor } from "./steer";
 import type { Sim } from "./types";
 
@@ -55,7 +57,7 @@ export class CitySim implements Sim {
   /** Length of the pointer's path in screen points, summed over every stroke. */
   distance = 0;
   version = 0;
-  private rand: () => number;
+  private rng: Rng;
   private msPerCell: number;
   private clock: number | null = null;
   private lastInput = -Infinity;
@@ -66,7 +68,7 @@ export class CitySim implements Sim {
   private lastPoints = new Map<number, Point>();
 
   constructor(readonly cfg: CityConfig) {
-    this.rand = mulberry32(cfg.seed);
+    this.rng = new Rng(cfg.seed);
     this.msPerCell = 1000 / cfg.speed;
   }
 
@@ -115,6 +117,40 @@ export class CitySim implements Sim {
     const until = Math.min(t, this.lastInput + this.cfg.idleStopMs);
     if (this.started && until > this.clock) this.drive(this.clock, until);
     this.clock = t;
+  }
+
+  snapshot(): CitySnapshot {
+    return {
+      rules: CITY_RULES_VERSION,
+      road: [...this.road],
+      lots: [...this.lots],
+      roller: { ...this.roller },
+      driven: this.driven,
+      distance: this.distance,
+      clock: this.clock,
+      lastInput: Number.isFinite(this.lastInput) ? this.lastInput : null,
+      started: this.started,
+      rng: this.rng.state,
+    };
+  }
+
+  /** The city a snapshot describes, or null for another rules version or a snapshot of the wrong shape. */
+  static restore(cfg: CityConfig, s: unknown): CitySim | null {
+    if (!isSnapshot(s)) return null;
+    const sim = new CitySim(cfg);
+    for (const [k, n] of s.road) sim.road.set(k, n);
+    for (const [k, t] of s.lots) sim.lots.set(k, t);
+    sim.roller.x = s.roller.x;
+    sim.roller.y = s.roller.y;
+    sim.roller.dir = s.roller.dir;
+    sim.roller.progress = s.roller.progress;
+    sim.driven = s.driven;
+    sim.distance = s.distance;
+    sim.clock = s.clock;
+    sim.lastInput = s.lastInput ?? -Infinity;
+    sim.started = s.started;
+    sim.rng.state = s.rng;
+    return sim;
   }
 
   /** The city's clock: the time of the last advance (the recording's time when replaying). */
@@ -209,8 +245,8 @@ export class CitySim implements Sim {
     for (let d = 0; d < 4; d++) {
       const nk = cellKey(x + DX[d], y + DY[d]);
       if (this.road.has(nk) || this.lots.has(nk)) continue;
-      if (this.rand() >= this.cfg.lotChance) continue;
-      this.lots.set(nk, t + lo + this.rand() * (hi - lo));
+      if (this.rng.next() >= this.cfg.lotChance) continue;
+      this.lots.set(nk, t + lo + this.rng.next() * (hi - lo));
     }
     this.version++;
   }

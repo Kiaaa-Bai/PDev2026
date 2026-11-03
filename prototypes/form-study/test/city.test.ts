@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CITY_RULES_VERSION } from "../src/config";
 import { CitySim, roadMaskAt, type CityConfig } from "../src/sims/city";
 
 const cfg: CityConfig = {
@@ -251,6 +252,98 @@ describe("CitySim houses", () => {
     swipe(sim, 1000);
     sim.advanceTo(2500);
     expect(sim.houses(21_000)).toBe(3);
+  });
+});
+
+describe("CitySim snapshot", () => {
+  /** Forty swipes that turn or just tap, with gaps long enough for the roller to park partway between cells. */
+  const script = (() => {
+    const headings = [PUSH.E, PUSH.S, PUSH.W, PUSH.N, PUSH.S, PUSH.E, PUSH.N];
+    let t = 1000;
+    return Array.from({ length: 40 }, (_, i) => {
+      t += 2000 + (i % 5) * 4000;
+      return { t, push: i % 4 === 3 ? ([0, 0] as const) : headings[(i * 3) % headings.length] };
+    });
+  })();
+  /** Plays swipes `from` up to `to` of the script, always whole swipes. */
+  const swipes = (sim: CitySim, from: number, to: number) => {
+    for (const { t, push } of script.slice(from, to)) swipe(sim, t, ...push);
+  };
+  const busy: CityConfig = { ...cfg, idleStopMs: 6000, slowMs: 3000, lotChance: 0.5, lotDelayMs: [20_000, 120_000], seed: 9 };
+  const state = (sim: CitySim) => ({
+    road: [...sim.road.entries()].sort(),
+    lots: [...sim.lots.entries()].sort(),
+    roller: sim.roller,
+    driven: sim.driven,
+    distance: sim.distance,
+    time: sim.time(),
+    parked: sim.parked(),
+  });
+  const throughJson = (s: unknown) => JSON.parse(JSON.stringify(s));
+
+  it("snapshot plus later records equals full replay", () => {
+    const whole = new CitySim(busy);
+    swipes(whole, 0, 40);
+    whole.advanceTo(400_000);
+
+    const first = new CitySim(busy);
+    swipes(first, 0, 20);
+    const restored = CitySim.restore(busy, throughJson(first.snapshot()))!;
+    expect(restored).not.toBeNull();
+    swipes(restored, 20, 40);
+    restored.advanceTo(400_000);
+
+    expect(whole.road.size).toBeGreaterThan(20);
+    expect(whole.lots.size).toBeGreaterThan(10);
+    expect(state(restored)).toEqual(state(whole));
+  });
+
+  it("picks up between two cells where it left off", () => {
+    const flat = { ...busy, slowMs: 0 };
+    const sim = new CitySim(flat);
+    swipe(sim, 1000);
+    sim.advanceTo(3500);
+    expect(sim.roller.progress).toBeCloseTo(0.5);
+    const restored = CitySim.restore(flat, throughJson(sim.snapshot()))!;
+    for (const s of [sim, restored]) s.advanceTo(5000);
+    expect(roads(restored)).toEqual(["0,0", "1,0", "2,0", "3,0", "4,0"]);
+    expect(state(restored)).toEqual(state(sim));
+  });
+
+  it("round-trips a city that was never touched", () => {
+    const sim = new CitySim(busy);
+    const restored = CitySim.restore(busy, throughJson(sim.snapshot()))!;
+    expect(restored.parked()).toBe(true);
+    expect(restored.time()).toBe(0);
+    swipes(sim, 0, 5);
+    swipes(restored, 0, 5);
+    expect(state(restored)).toEqual(state(sim));
+  });
+
+  it("ignores a snapshot from another rules version", () => {
+    const sim = new CitySim(busy);
+    swipes(sim, 0, 5);
+    const snap = sim.snapshot();
+    expect(snap.rules).toBe(CITY_RULES_VERSION);
+    expect(CitySim.restore(busy, { ...snap, rules: CITY_RULES_VERSION + 1 })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, rules: CITY_RULES_VERSION - 1 })).toBeNull();
+    const { rules: _gone, ...noRules } = snap;
+    expect(CitySim.restore(busy, noRules)).toBeNull();
+  });
+
+  it("ignores broken snapshot text", () => {
+    const sim = new CitySim(busy);
+    swipes(sim, 0, 5);
+    const snap = throughJson(sim.snapshot());
+    expect(CitySim.restore(busy, { rules: CITY_RULES_VERSION, road: 5 })).toBeNull();
+    for (const bad of [null, undefined, 5, "{}", [], {}]) expect(CitySim.restore(busy, bad)).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, lots: [["0,1"]] })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, road: [["0,0", null]] })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, roller: { ...snap.roller, dir: 7 } })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, started: "yes" })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, rng: "seed" })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, clock: "now" })).toBeNull();
+    expect(CitySim.restore(busy, snap)).not.toBeNull();
   });
 });
 

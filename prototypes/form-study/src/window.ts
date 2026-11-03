@@ -19,6 +19,8 @@ const CITY_TAB = 0;
 const HEAT_TAB = 1;
 /** Keep repainting this long after a change, so a short animation can play out. */
 const SETTLE_MS = 400;
+/** The city is saved this often, and when the window closes. */
+const SAVE_EVERY_MS = 5 * 60_000;
 
 const tabsEl = document.querySelector<HTMLElement>("#tabs")!;
 const stageEl = document.querySelector<HTMLElement>("#stage")!;
@@ -41,6 +43,23 @@ function saveTab(i: number): void {
   }
 }
 
+/** The saved city, or null when there is none, it can't be read, or its rules have changed. */
+async function loadCity(): Promise<CitySim | null> {
+  try {
+    const text = await invoke<string>("load_snapshot");
+    return text ? CitySim.restore(CITY, JSON.parse(text)) : null;
+  } catch {
+    return null; // broken snapshot text counts as no snapshot
+  }
+}
+
+/** Saves queue behind each other: the Rust side writes one temp file, so two must never overlap. */
+let saving: Promise<void> = Promise.resolve();
+function saveCity(city: CitySim): void {
+  const json = JSON.stringify(city.snapshot());
+  saving = saving.then(() => invoke<void>("save_snapshot", { json })).catch(() => undefined);
+}
+
 async function boot() {
   if (!isTauri()) {
     hudEl.textContent = "Open this page from the Capture app";
@@ -59,7 +78,9 @@ async function boot() {
 
   const heat = new Heat(64, 40);
   const fingers = new Map<number, { x: number; y: number }>();
-  const city = new CitySim(CITY);
+  // The city is the saved snapshot plus every record after it; with no snapshot, every day on disk.
+  const saved = await loadCity();
+  const city = saved ?? new CitySim(CITY);
   const sims: Sim[] = [city];
   const views = [new CityView(city), new HeatView(heat, fingers)];
   views.forEach((v) => app.stage.addChild(v.root));
@@ -75,7 +96,7 @@ async function boot() {
     feeder.push(r);
   }
 
-  // Listen before reading today's file so touches made meanwhile are kept.
+  // Listen before reading the day files so touches made meanwhile are kept.
   const queued: TouchRecord[] = [];
   let ready = false;
   await listen<TouchRecord[]>("touches", (event) => {
@@ -86,13 +107,15 @@ async function boot() {
   });
 
   const source = await invoke<string>("capture_source");
+  // The City tab replays every day after the snapshot. The Heat tab shows today only.
+  const after = saved ? saved.time() : -Infinity;
+  const days = parseJsonl(await invoke<string>("days_text", { fromMs: Math.max(0, Math.floor(after)) }));
+  for (const r of days) if (r.t > after) feeder.push(r);
   const today = parseJsonl(await invoke<string>("today_text"));
-  for (const r of today) {
-    if (r.state !== "up") heat.addPoint(r.x, r.y, bounds);
-    feeder.push(r);
-  }
-  // Queued touches that already made it into the file were counted above.
-  const lastInFile = today.length ? today[today.length - 1].t : -Infinity;
+  for (const r of today) if (r.state !== "up") heat.addPoint(r.x, r.y, bounds);
+  // Queued touches that already made it into the files were counted above.
+  const lastT = (rs: TouchRecord[]) => (rs.length ? rs[rs.length - 1].t : -Infinity);
+  const lastInFile = Math.max(lastT(days), lastT(today));
   for (const r of queued.splice(0)) if (r.t > lastInFile) take(r);
   ready = true;
 
@@ -149,6 +172,9 @@ async function boot() {
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  setInterval(() => saveCity(city), SAVE_EVERY_MS);
+  window.addEventListener("beforeunload", () => saveCity(city)); // best effort: the window may close first
 }
 
 boot();
