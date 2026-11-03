@@ -1,14 +1,20 @@
+import { CITY_RULES_VERSION } from "../config";
 import type { Point } from "../data";
-import { mulberry32 } from "../rng";
+import { Rng } from "../rng";
+import { isSnapshot, type CitySnapshot } from "./city-snapshot";
+import { isUnlocked, kindFor, neighboursAt, type Kind } from "./kinds";
+import { headingFor } from "./steer";
 import type { Sim } from "./types";
 
 export interface CityConfig {
   /** Tiles per second while driving. */
   speed: number;
-  /** How far a finger must move (0–1 of the pad) before it steers. */
+  /** How far a pointer must move, in screen points, before it steers. */
   steerMin: number;
   /** The roller parks this long after the last touch. */
   idleStopMs: number;
+  /** Over this last stretch before parking it slows evenly to a stop. */
+  slowMs: number;
   /** A lot beside new road gets its house after a delay in this range. */
   lotDelayMs: [number, number];
   /** Chance that a free cell beside new road becomes a lot. */
@@ -47,31 +53,43 @@ export class CitySim implements Sim {
   readonly road = new Map<string, number>();
   /** Lots beside road, mapped to the time their house appears. */
   readonly lots = new Map<string, number>();
+  /** The kind of building on each lot, fixed when the lot was made and never changed after. */
+  readonly kinds = new Map<string, Kind>();
+  /** True while the one landmark stands; the roller flattening it clears this, so a later lot can be the landmark. */
+  landmarkPlaced = false;
   readonly roller = { x: 0, y: 0, dir: 0 as Dir, progress: 0 };
   driven = 0;
+  /** Length of the pointer's path in screen points, summed over every stroke. */
+  distance = 0;
   version = 0;
-  private rand: () => number;
+  private rng: Rng;
   private msPerCell: number;
   private clock: number | null = null;
   private lastInput = -Infinity;
   private started = false;
   /** Where each finger last steered from. */
   private anchors = new Map<number, Point>();
+  /** Where each finger was at its previous point, for the distance. */
+  private lastPoints = new Map<number, Point>();
 
   constructor(readonly cfg: CityConfig) {
-    this.rand = mulberry32(cfg.seed);
+    this.rng = new Rng(cfg.seed);
     this.msPerCell = 1000 / cfg.speed;
   }
 
   beginStroke(id: number, t: number): void {
     this.touch(t);
     this.anchors.delete(id);
+    this.lastPoints.delete(id);
   }
 
   addPoints(id: number, points: Point[]): void {
     for (const p of points) {
       this.advanceTo(p.t);
       this.touch(p.t);
+      const prev = this.lastPoints.get(id);
+      if (prev) this.distance += Math.hypot(p.x - prev.x, p.y - prev.y);
+      this.lastPoints.set(id, p);
       const from = this.anchors.get(id);
       if (!from) {
         this.anchors.set(id, p);
@@ -79,9 +97,9 @@ export class CitySim implements Sim {
       }
       const dx = p.x - from.x;
       const dy = p.y - from.y;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) < this.cfg.steerMin) continue;
+      if (Math.hypot(dx, dy) < this.cfg.steerMin) continue;
       this.anchors.set(id, p);
-      const dir: Dir = Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 0 : 2) : dy > 0 ? 1 : 3;
+      const dir = headingFor(dx, dy, this.roller.dir);
       if (dir !== this.roller.dir) {
         this.roller.dir = dir;
         this.roller.progress = 0;
@@ -92,6 +110,7 @@ export class CitySim implements Sim {
 
   endStroke(id: number): void {
     this.anchors.delete(id);
+    this.lastPoints.delete(id);
   }
 
   advanceTo(t: number): void {
@@ -103,6 +122,44 @@ export class CitySim implements Sim {
     const until = Math.min(t, this.lastInput + this.cfg.idleStopMs);
     if (this.started && until > this.clock) this.drive(this.clock, until);
     this.clock = t;
+  }
+
+  snapshot(): CitySnapshot {
+    return {
+      rules: CITY_RULES_VERSION,
+      road: [...this.road],
+      lots: [...this.lots],
+      kinds: [...this.kinds],
+      landmark: this.landmarkPlaced,
+      roller: { ...this.roller },
+      driven: this.driven,
+      distance: this.distance,
+      clock: this.clock,
+      lastInput: Number.isFinite(this.lastInput) ? this.lastInput : null,
+      started: this.started,
+      rng: this.rng.state,
+    };
+  }
+
+  /** The city a snapshot describes, or null for another rules version or a snapshot of the wrong shape. */
+  static restore(cfg: CityConfig, s: unknown): CitySim | null {
+    if (!isSnapshot(s)) return null;
+    const sim = new CitySim(cfg);
+    for (const [k, n] of s.road) sim.road.set(k, n);
+    for (const [k, t] of s.lots) sim.lots.set(k, t);
+    for (const [k, kind] of s.kinds) sim.kinds.set(k, kind);
+    sim.landmarkPlaced = s.landmark;
+    sim.roller.x = s.roller.x;
+    sim.roller.y = s.roller.y;
+    sim.roller.dir = s.roller.dir;
+    sim.roller.progress = s.roller.progress;
+    sim.driven = s.driven;
+    sim.distance = s.distance;
+    sim.clock = s.clock;
+    sim.lastInput = s.lastInput ?? -Infinity;
+    sim.started = s.started;
+    sim.rng.state = s.rng;
+    return sim;
   }
 
   /** The city's clock: the time of the last advance (the recording's time when replaying). */
@@ -123,6 +180,11 @@ export class CitySim implements Sim {
 
   hasRoad(x: number, y: number): boolean {
     return this.road.has(cellKey(x, y));
+  }
+
+  /** The kind of building on the lot at (x, y), or undefined where there is no lot. */
+  lotKind(x: number, y: number): Kind | undefined {
+    return this.kinds.get(cellKey(x, y));
   }
 
   /** 0 for no house yet, else the house's tier at time t. */
@@ -150,15 +212,37 @@ export class CitySim implements Sim {
     }
   }
 
+  /**
+   * Distance in full-speed milliseconds covered `u` ms after the last touch:
+   * full speed until the slowing stretch, then slowing evenly to zero.
+   */
+  private reach(u: number): number {
+    const full = this.cfg.idleStopMs - this.cfg.slowMs;
+    if (u <= full) return u;
+    const s = Math.min(u, this.cfg.idleStopMs) - full;
+    return full + s - (s * s) / (2 * this.cfg.slowMs);
+  }
+
+  /** The inverse of reach: how long after the last touch a distance is covered. */
+  private reachedAt(d: number): number {
+    const full = this.cfg.idleStopMs - this.cfg.slowMs;
+    if (d <= full) return d;
+    const w = this.cfg.slowMs;
+    return full + w * (1 - Math.sqrt(Math.max(0, 1 - (2 * (d - full)) / w)));
+  }
+
   private drive(from: number, until: number): void {
-    let t = from;
+    const last = this.lastInput;
+    let d = this.reach(Math.max(0, from - last));
+    const end = this.reach(until - last);
     for (;;) {
       const toNext = (1 - this.roller.progress) * this.msPerCell;
-      if (t + toNext > until) {
-        this.roller.progress += (until - t) / this.msPerCell;
+      if (d + toNext > end) {
+        this.roller.progress += (end - d) / this.msPerCell;
         return;
       }
-      t += toNext;
+      d += toNext;
+      const t = last + this.reachedAt(d);
       this.roller.progress = 0;
       this.roller.x += DX[this.roller.dir];
       this.roller.y += DY[this.roller.dir];
@@ -171,14 +255,48 @@ export class CitySim implements Sim {
     const k = cellKey(x, y);
     this.road.set(k, (this.road.get(k) ?? 0) + 1);
     this.lots.delete(k);
+    if (this.kinds.get(k) === "landmark") this.landmarkPlaced = false;
+    this.kinds.delete(k);
     const [lo, hi] = this.cfg.lotDelayMs;
     for (let d = 0; d < 4; d++) {
-      const nk = cellKey(x + DX[d], y + DY[d]);
+      const lx = x + DX[d];
+      const ly = y + DY[d];
+      const nk = cellKey(lx, ly);
       if (this.road.has(nk) || this.lots.has(nk)) continue;
-      if (this.rand() >= this.cfg.lotChance) continue;
-      this.lots.set(nk, t + lo + this.rand() * (hi - lo));
+      if (this.rng.next() >= this.cfg.lotChance) continue;
+      // three draws for every new lot, whatever is unlocked, so what the draws decide never depends on the thresholds
+      const ready = t + lo + this.rng.next() * (hi - lo);
+      const roll = this.rng.next();
+      this.kinds.set(nk, this.kindOfNewLot(lx, ly, roll));
+      this.lots.set(nk, ready);
     }
     this.version++;
+  }
+
+  /**
+   * The kind of the lot about to be made at (x, y), from what is around it and the distance now. Once it
+   * is unlocked, the first lot made beside road that was driven `wideRoadAt` times is the landmark; there is
+   * at most one landmark at a time, and a flattened one can be replaced by a later lot.
+   */
+  private kindOfNewLot(x: number, y: number, roll: number): Kind {
+    if (!this.landmarkPlaced && isUnlocked("landmark", this.distance) && this.besideWideRoad(x, y)) {
+      this.landmarkPlaced = true;
+      return "landmark";
+    }
+    const n = neighboursAt(
+      (cx, cy) => this.road.has(cellKey(cx, cy)),
+      (cx, cy) => this.lots.has(cellKey(cx, cy)),
+      x,
+      y,
+    );
+    return kindFor(n, this.distance, roll);
+  }
+
+  private besideWideRoad(x: number, y: number): boolean {
+    for (let d = 0; d < 4; d++) {
+      if ((this.road.get(cellKey(x + DX[d], y + DY[d])) ?? 0) >= this.cfg.wideRoadAt) return true;
+    }
+    return false;
   }
 
   private besideBusyRoad(x: number, y: number): boolean {

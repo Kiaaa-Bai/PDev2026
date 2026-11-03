@@ -1,70 +1,51 @@
 import "./style.css";
-import type { Container } from "pixi.js";
-import { CITY, FARM, MONSTER, MONSTER_LIVE_SPAWN_MS } from "./config";
+import { hourParam, skyTime } from "./clock";
+import { CITY } from "./config";
 import { parseJsonl, toStrokes } from "./data";
 import { attachLive, Feeder, inputSims } from "./drive";
-import type { Finger } from "./pointers";
-import { CityView } from "./render/city";
-import { FarmView } from "./render/farm";
-import { MonsterView } from "./render/monster";
-import { createPanel, type Panel } from "./render/panel";
+import { CityView3D } from "./render/city3d";
+import { createPanel, PANEL_H, PANEL_W } from "./render/panel";
 import { CitySim } from "./sims/city";
-import { FarmSim } from "./sims/farm";
-import { MonsterSim } from "./sims/monster";
 import type { Sim } from "./sims/types";
-import { loadTiles } from "./tiles";
-
-interface View {
-  root: Container;
-  update(now: number): void;
-  stat(): string;
-  destroy(): void;
-}
 
 interface World {
   mode: "live" | "file";
   sims: Sim[];
-  views: View[];
-  monster: MonsterSim;
   feeder: Feeder;
 }
 
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 const host = document.querySelector<HTMLElement>("#panels")!;
-/** The mouse while it is pressed, drawn as each form's tool. */
-const fingers = new Map<number, Finger>();
 
-function makeWorld(mode: World["mode"], panels: Panel[]): World {
-  const city = new CitySim(CITY);
-  const farm = new FarmSim(FARM);
-  const monster = new MonsterSim(mode === "live" ? { ...MONSTER, spawnIntervalMs: MONSTER_LIVE_SPAWN_MS } : MONSTER);
-  const views: View[] = [new CityView(city), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
-  views.forEach((v, i) => panels[i].app.stage.addChild(v.root));
-  const sims = [city, farm, monster];
-  return { mode, sims, views, monster, feeder: new Feeder(() => sims) };
-}
+/** Dev only: `?hour=22` (or `?hour=19.5`) shows the city at that time of day, whatever else the clock says. */
+const hour = hourParam(location.search);
+
+/** Dev only: `?distance=3000000` starts every city with that much pointer distance, so the kinds it unlocks show at once. */
+const startDistance = Math.max(0, parseFloat(new URLSearchParams(location.search).get("distance") ?? "")) || 0;
 
 async function boot() {
-  await loadTiles();
-  const panels: Panel[] = [];
-  for (const title of ["City", "Farm", "Monster"]) panels.push(await createPanel(host, title));
+  // The city's own clock while a recording is replayed, so a day recorded in the evening is shown in the evening.
+  let replayed: CitySim | null = null;
+  const clock = () => skyTime(hour, replayed && replayed.time() > 0 ? replayed.time() : null);
+  const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H, clock);
+  await view.load();
+  view.attachZoom();
+  const panel = createPanel(host, "City", view.canvas);
 
-  let world = makeWorld("live", panels);
-  // The mouse is finger 0: it shows as each form's tool and, in live mode, drives the forms.
-  const liveFeeder = new Feeder(() => inputSims(world.mode, world.sims));
-  attachLive(
-    panels.map((p) => p.canvas),
-    (r) => {
-      if (r.state === "up") fingers.delete(r.id);
-      else fingers.set(r.id, { x: r.x, y: r.y });
-      liveFeeder.push(r);
-    },
-  );
-
-  function swap(next: World) {
-    world.views.forEach((v) => v.destroy());
-    world = next;
+  /** A fresh city on the view: live (the mouse drives it) or file (a recording drives it). */
+  function makeWorld(mode: World["mode"]): World {
+    const city = new CitySim(CITY);
+    city.distance = startDistance;
+    replayed = mode === "file" ? city : null;
+    view.setSim(city);
+    const sims = [city];
+    return { mode, sims, feeder: new Feeder(() => sims) };
   }
+
+  let world = makeWorld("live");
+  // The mouse is finger 0 and, in live mode, drives the city; its records are page pixels.
+  const liveFeeder = new Feeder(() => inputSims(world.mode, world.sims));
+  attachLive([panel.canvas], (r) => liveFeeder.push(r));
 
   function loadText(text: string, name: string) {
     const records = parseJsonl(text);
@@ -73,15 +54,14 @@ async function boot() {
       statusEl.textContent = `No touch records in ${name}`;
       return;
     }
-    swap(makeWorld("file", panels));
+    world = makeWorld("file");
     for (const r of records) world.feeder.push(r);
-    world.monster.poofs.length = 0;
     statusEl.textContent = `${name}: ${strokes.length.toLocaleString()} strokes · Reset to draw`;
   }
 
   document.querySelector("#reset")!.addEventListener("click", () => {
-    swap(makeWorld("live", panels));
-    statusEl.textContent = "Live: drag on any panel";
+    world = makeWorld("live");
+    statusEl.textContent = "Live: drag on the panel";
   });
 
   document.querySelector("#sample")!.addEventListener("click", async () => {
@@ -99,13 +79,14 @@ async function boot() {
   function frame() {
     const now = Date.now();
     if (world.mode === "live") for (const sim of world.sims) sim.advanceTo(now);
-    world.views.forEach((v, i) => {
-      v.update(performance.now());
-      panels[i].stat.textContent = v.stat();
-    });
+    view.update(performance.now());
+    panel.stat.textContent = view.stat();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 }
 
-boot();
+boot().catch((e: unknown) => {
+  console.error(e);
+  statusEl.textContent = `Could not start: ${e instanceof Error ? e.message : String(e)}`;
+});

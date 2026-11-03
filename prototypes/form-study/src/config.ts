@@ -2,10 +2,14 @@ import type { CityConfig } from "./sims/city";
 import type { FarmConfig } from "./sims/farm";
 import type { MonsterConfig } from "./sims/monster";
 
+/** Bump when the city's rules change, so an old snapshot is dropped and the days are replayed. */
+export const CITY_RULES_VERSION = 3;
+
 export const CITY: CityConfig = {
   speed: 1,
-  steerMin: 0.03,
-  idleStopMs: 5 * 60_000,
+  steerMin: 40, // screen points
+  idleStopMs: 30_000,
+  slowMs: 30_000,
   lotDelayMs: [3_000, 15_000],
   lotChance: 0.6,
   tierAgesMs: [5 * 60_000, 20 * 60_000],

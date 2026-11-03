@@ -29,24 +29,28 @@ export class Feeder {
   }
 }
 
+/**
+ * The window's live city runs this far behind the wall clock. A record reaches the window some milliseconds
+ * after the moment it records, and a city already advanced past that moment would apply its turn late:
+ * its roller would have driven on in the old direction, so the city would differ from a replay of the
+ * same records (and from the one regrown after a restart). This is far more than that delay.
+ */
+export const LIVE_LAG_MS = 100;
+
+/** The moment the window's live city is advanced to at wall-clock time `now` (ms). */
+export const liveTime = (now: number): number => now - LIVE_LAG_MS;
+
 /** A loaded day runs on the recording's clock; mouse strokes would jump it to now. */
 export function inputSims(mode: "live" | "file", sims: Sim[]): Sim[] {
   return mode === "live" ? sims : [];
 }
 
-/** Mouse drags on any target become touch records for finger 0. */
+/** Mouse drags on any target become touch records for finger 0, in page pixels from the target's top-left. */
 export function attachLive(targets: HTMLElement[], onRecord: (r: TouchRecord) => void, now: () => number = Date.now): void {
   let down = false;
   const record = (e: PointerEvent, el: HTMLElement, state: TouchRecord["state"]): TouchRecord => {
     const rect = el.getBoundingClientRect();
-    const clamp = (v: number) => Math.min(1, Math.max(0, v));
-    return {
-      t: now(),
-      id: 0,
-      x: clamp((e.clientX - rect.left) / rect.width),
-      y: clamp((e.clientY - rect.top) / rect.height),
-      state,
-    };
+    return { t: now(), id: 0, x: e.clientX - rect.left, y: e.clientY - rect.top, state };
   };
   for (const el of targets) {
     el.addEventListener("pointerdown", (e) => {

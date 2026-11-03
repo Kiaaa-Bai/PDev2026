@@ -1,10 +1,11 @@
-//! Glue: a capture source feeds the sampler; records go to today's file and
+//! Glue: the pointer feeds the sampler; records go to today's file and
 //! to the window.
 
+use crate::cursor;
 use crate::record::TouchRecord;
 use crate::sampler::Sampler;
-use crate::store::{self, DailyWriter};
-use crate::{cursor, multitouch, wake};
+use crate::store::DailyWriter;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now_ms() -> u64 {
@@ -14,29 +15,17 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Starts capture on a background thread and returns which source is in use.
-pub fn start<F>(on_records: F) -> Result<&'static str, String>
+/// Starts capture on a background thread, writing day files into `data_dir`,
+/// and returns which source is in use (always the cursor now; the trackpad
+/// code stays in the crate, unused).
+pub fn start<F>(data_dir: PathBuf, on_records: F) -> Result<&'static str, String>
 where
     F: Fn(&[TouchRecord]) + Send + 'static,
 {
-    let (rx, source) = match multitouch::start() {
-        Ok(rx) => {
-            wake::watch(|| {
-                eprintln!("Mac woke from sleep; reopening the trackpad");
-                if let Err(e) = multitouch::restart() {
-                    eprintln!("could not reopen the trackpad: {e}");
-                }
-            });
-            (rx, "trackpad")
-        }
-        Err(e) => {
-            eprintln!("multitouch unavailable ({e}); falling back to the cursor");
-            (cursor::start()?, "cursor")
-        }
-    };
+    let rx = cursor::start()?;
     std::thread::spawn(move || {
-        let mut sampler = Sampler::new(33);
-        let mut writer = DailyWriter::new(store::data_dir());
+        let mut sampler = Sampler::new_points(33);
+        let mut writer = DailyWriter::new(data_dir);
         for frame in rx {
             let records = sampler.process(now_ms(), &frame);
             if records.is_empty() {
@@ -48,5 +37,5 @@ where
             on_records(&records);
         }
     });
-    Ok(source)
+    Ok("cursor")
 }

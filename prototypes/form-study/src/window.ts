@@ -1,27 +1,24 @@
 import "./window.css";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Application } from "pixi.js";
-import { CITY, FARM, MONSTER } from "./config";
+import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
-import { Feeder } from "./drive";
+import { Feeder, liveTime } from "./drive";
 import { Heat } from "./heat";
-import { CityView } from "./render/city";
-import { FarmView } from "./render/farm";
+import { CityView3D } from "./render/city3d";
 import { HeatView } from "./render/heat";
-import { MonsterView } from "./render/monster";
 import { PANEL_H, PANEL_W } from "./render/panel";
 import { CitySim } from "./sims/city";
-import { FarmSim } from "./sims/farm";
-import { MonsterSim } from "./sims/monster";
 import type { Sim } from "./sims/types";
-import { loadTiles } from "./tiles";
 
-const TABS = ["Heat", "City", "Farm", "Monster"];
+const TABS = ["City", "Heat"];
 const TAB_KEY = "trackpad.tab";
-const CITY_TAB = 1;
-/** Keep repainting this long after a change, so the defeat flash can play out. */
-const SETTLE_MS = 400;
+const CITY_TAB = 0;
+const HEAT_TAB = 1;
+/** The city is saved this often, and when the window closes. */
+const SAVE_EVERY_MS = 5 * 60_000;
 
 const tabsEl = document.querySelector<HTMLElement>("#tabs")!;
 const stageEl = document.querySelector<HTMLElement>("#stage")!;
@@ -44,40 +41,61 @@ function saveTab(i: number): void {
   }
 }
 
+/** The saved city, or null when there is none, it can't be read, or its rules have changed. */
+async function loadCity(): Promise<CitySim | null> {
+  try {
+    const text = await invoke<string>("load_snapshot");
+    return text ? CitySim.restore(CITY, JSON.parse(text)) : null;
+  } catch {
+    return null; // broken snapshot text counts as no snapshot
+  }
+}
+
+/** Saves queue behind each other: the Rust side writes one temp file, so two must never overlap. */
+let saving: Promise<void> = Promise.resolve();
+function saveCity(city: CitySim): void {
+  const json = JSON.stringify(city.snapshot());
+  saving = saving.then(() => invoke<void>("save_snapshot", { json })).catch(() => undefined);
+}
+
 async function boot() {
   if (!isTauri()) {
     hudEl.textContent = "Open this page from the Capture app";
     return;
   }
-  await loadTiles();
   // The window stays open all day, so render only when something changed.
+  // The City tab is its own 3D canvas; the Heat tab is Pixi.
   const app = new Application();
   await app.init({ width: PANEL_W, height: PANEL_H, background: "#111111", antialias: false, roundPixels: true, autoStart: false });
-  stageEl.append(app.canvas as HTMLCanvasElement);
+  const heatCanvas = app.canvas as HTMLCanvasElement;
 
+  // Records are screen points. The heat map keeps today's points and scales itself to the area they cover,
+  // so it needs no display sizes (and follows a display docked later); the fingers are drawn in the same points.
   const heat = new Heat(64, 40);
   const fingers = new Map<number, { x: number; y: number }>();
-  const city = new CitySim(CITY);
-  const farm = new FarmSim(FARM);
-  const monster = new MonsterSim(MONSTER);
-  const sims: Sim[] = [city, farm, monster];
-  const views = [new HeatView(heat, fingers), new CityView(city), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
-  views.forEach((v) => app.stage.addChild(v.root));
+  // The city is the saved snapshot plus every record after it; with no snapshot, every day on disk.
+  const saved = await loadCity();
+  const city = saved ?? new CitySim(CITY);
+  const sims: Sim[] = [city];
+  const cityView = new CityView3D(city, PANEL_W, PANEL_H);
+  await cityView.load();
+  cityView.attachZoom();
+  const heatView = new HeatView(heat, fingers);
+  app.stage.addChild(heatView.root);
+  stageEl.append(cityView.canvas, heatCanvas);
   const feeder = new Feeder(() => sims);
-  let touched = 0;
 
   function take(r: TouchRecord) {
-    touched++;
     if (r.state === "up") {
       fingers.delete(r.id);
     } else {
       fingers.set(r.id, { x: r.x, y: r.y });
-      heat.add(r.x, r.y);
+      heat.add(r.x, r.y, r.t);
     }
     feeder.push(r);
   }
 
-  // Listen before reading today's file so touches made meanwhile are kept.
+  // Listen before reading the day files so touches made meanwhile are kept.
   const queued: TouchRecord[] = [];
   let ready = false;
   await listen<TouchRecord[]>("touches", (event) => {
@@ -88,19 +106,20 @@ async function boot() {
   });
 
   const source = await invoke<string>("capture_source");
+  // The City tab replays every day after the snapshot. The Heat tab shows today only.
+  const after = saved ? saved.time() : -Infinity;
+  const days = parseJsonl(await invoke<string>("days_text", { fromMs: Math.max(0, Math.floor(after)) }));
+  for (const r of days) if (r.t > after) feeder.push(r);
   const today = parseJsonl(await invoke<string>("today_text"));
-  for (const r of today) {
-    if (r.state !== "up") heat.add(r.x, r.y);
-    feeder.push(r);
-  }
-  monster.poofs.length = 0;
-  // Queued touches that already made it into the file were counted above.
-  const lastInFile = today.length ? today[today.length - 1].t : -Infinity;
+  for (const r of today) if (r.state !== "up") heat.add(r.x, r.y, r.t);
+  // Queued touches that already made it into the files were counted above.
+  const lastT = (rs: TouchRecord[]) => (rs.length ? rs[rs.length - 1].t : -Infinity);
+  const lastInFile = Math.max(lastT(days), lastT(today));
   for (const r of queued.splice(0)) if (r.t > lastInFile) take(r);
   ready = true;
 
   let active = savedTab();
-  let shown = -1;
+  let heatSig = "";
   const buttons = TABS.map((name, i) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -113,7 +132,11 @@ async function boot() {
 
   function show(i: number) {
     active = i;
-    views.forEach((v, j) => (v.root.visible = j === i));
+    // only the active tab's canvas is visible, and it repaints once it is shown again
+    cityView.canvas.style.display = i === CITY_TAB ? "block" : "none";
+    heatCanvas.style.display = i === HEAT_TAB ? "block" : "none";
+    cityView.invalidate();
+    heatSig = "";
     buttons.forEach((b, j) => b.classList.toggle("on", j === i));
     saveTab(i);
   }
@@ -124,30 +147,44 @@ async function boot() {
   });
   show(active);
 
-  let lastSig = "";
-  let changedAt = 0;
   let hud = "";
   function frame() {
     const now = performance.now();
-    for (const sim of sims) sim.advanceTo(Date.now());
-    // The roller moves on its own, so the City tab repaints as it crosses each pixel.
-    const at = city.rollerAt();
-    const cityMotion = active === CITY_TAB ? `${Math.round(at.x * 16)},${Math.round(at.y * 16)},${Math.floor(city.time() / 5000)}` : "";
-    const sig = [heat.version, city.version, farm.version, monster.version, touched, active, cityMotion].join(",");
-    if (sig !== lastSig || shown !== active) {
-      lastSig = sig;
-      shown = active;
-      changedAt = now;
+    for (const sim of sims) sim.advanceTo(liveTime(Date.now()));
+    // Each tab repaints only for changes it shows. The 3D city decides for itself
+    // (the roller moves on its own); the heat map repaints on each point and when the pointer lifts.
+    if (active === CITY_TAB) {
+      cityView.update(now);
+    } else {
+      heat.rollTo(Date.now()); // a window left open past midnight shows the new day, empty, before its first touch
+      const sig = `${heat.version},${fingers.size}`;
+      if (sig !== heatSig) {
+        heatSig = sig;
+        heatView.update(now);
+        app.render();
+      }
     }
-    if (now - changedAt < SETTLE_MS) {
-      views.forEach((v) => v.update(now));
-      app.render();
-    }
-    const text = `${views[active].stat()} · ${source}`;
+    const text = `${(active === CITY_TAB ? cityView : heatView).stat()} · ${source}`;
     if (text !== hud) hudEl.textContent = hud = text;
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  setInterval(() => saveCity(city), SAVE_EVERY_MS);
+  // Closing the window waits for the save to land; the window is then destroyed (which the capability allows).
+  await getCurrentWindow().onCloseRequested(async () => {
+    try {
+      saveCity(city);
+      await saving;
+    } catch (e) {
+      console.error("could not save the city on close", e); // never block closing
+    }
+  });
+  window.addEventListener("beforeunload", () => saveCity(city)); // best effort, for a reload
 }
 
-boot();
+// A model that fails to load (or anything else in boot) would leave a blank window: say why.
+boot().catch((e: unknown) => {
+  console.error(e);
+  hudEl.textContent = `Could not start: ${e instanceof Error ? e.message : String(e)}`;
+});

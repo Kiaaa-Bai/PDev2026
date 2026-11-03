@@ -5,7 +5,7 @@ import { PANEL_H, PANEL_W } from "./panel";
 const BG = 0x111111;
 const WARM = 0xffaa50;
 
-/** The heat map plus the fingers that are down right now. */
+/** The heat map plus the fingers that are down right now (`fingers` are in screen points, drawn where the heat map puts them). */
 export class HeatView {
   readonly root = new Container();
   private cells = new Graphics();
@@ -35,11 +35,13 @@ export class HeatView {
         this.cells.rect((i % cols) * cw, Math.floor(i / cols) * ch, cw, ch).fill({ color: WARM, alpha });
       }
     }
-    const key = [...this.fingers.values()].map((f) => `${f.x},${f.y}`).join(";");
+    // where each finger is on the panel; they move when the heat map's area grows, too
+    const at = [...this.fingers.values()].map((f) => this.heat.toUnit(f.x, f.y));
+    const key = at.map(([u, v]) => `${u},${v}`).join(";");
     if (key !== this.seenFingers) {
       this.seenFingers = key;
       this.dots.clear();
-      for (const f of this.fingers.values()) this.dots.circle(f.x * PANEL_W, f.y * PANEL_H, 5).fill(0xffffff);
+      for (const [u, v] of at) this.dots.circle(u * PANEL_W, v * PANEL_H, 5).fill(0xffffff);
     }
   }
 

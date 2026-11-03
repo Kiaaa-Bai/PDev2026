@@ -1,4 +1,6 @@
-//! One append-only .jsonl file per local day in prototypes/data/.
+//! One append-only cursor-YYYY-MM-DD.jsonl file per local day, plus the city
+//! snapshot beside them. Every function takes the directory; the app passes
+//! its per-user app data folder, so each Mac keeps its own files.
 
 use crate::record::TouchRecord;
 use chrono::{Local, NaiveDate};
@@ -6,13 +8,16 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-/// prototypes/data, resolved from the source tree (fine for a prototype).
-pub fn data_dir() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data"))
-}
+const SNAPSHOT_FILE: &str = "city-snapshot.json";
 
 pub fn file_name_for(date: NaiveDate) -> String {
-    format!("touches-{}.jsonl", date.format("%Y-%m-%d"))
+    format!("cursor-{}.jsonl", date.format("%Y-%m-%d"))
+}
+
+/// The date in a `cursor-YYYY-MM-DD.jsonl` file name; `None` for any other name.
+fn date_of_file_name(name: &str) -> Option<NaiveDate> {
+    let stem = name.strip_prefix("cursor-")?.strip_suffix(".jsonl")?;
+    NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
 pub struct DailyWriter {
@@ -52,6 +57,35 @@ pub fn today_text(dir: &Path) -> String {
     text_for(dir, Local::now().date_naive())
 }
 
+/// Every cursor day file dated `from` or later, concatenated in date order.
+/// Other files in the directory (old trackpad files, the snapshot) are ignored.
+pub fn days_text(dir: &Path, from: NaiveDate) -> String {
+    let Ok(entries) = std::fs::read_dir(dir) else { return String::new() };
+    let mut days: Vec<(NaiveDate, PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let date = date_of_file_name(e.file_name().to_str()?)?;
+            (date >= from).then(|| (date, e.path()))
+        })
+        .collect();
+    days.sort();
+    days.iter().filter_map(|(_, path)| std::fs::read_to_string(path).ok()).collect()
+}
+
+/// The saved city snapshot as raw JSON text; empty if there is none.
+pub fn load_snapshot(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(SNAPSHOT_FILE)).unwrap_or_default()
+}
+
+/// Replaces the saved snapshot. Writes a temp file first and renames it over
+/// the old one, so a crash mid-write never leaves a half-written snapshot.
+pub fn save_snapshot(dir: &Path, json: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{SNAPSHOT_FILE}.tmp"));
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, dir.join(SNAPSHOT_FILE))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,8 +102,9 @@ mod tests {
     }
 
     #[test]
-    fn file_name_uses_the_date() {
-        assert_eq!(file_name_for(day(11)), "touches-2026-10-11.jsonl");
+    fn file_name_is_cursor_per_day() {
+        let d = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        assert_eq!(file_name_for(d), "cursor-2026-11-03.jsonl");
     }
 
     #[test]
@@ -78,8 +113,8 @@ mod tests {
         let mut w = DailyWriter::new(dir.path().to_path_buf());
         w.write(day(11), &[rec(1), rec(2)]).unwrap();
         w.write(day(12), &[rec(3)]).unwrap();
-        let a = fs::read_to_string(dir.path().join("touches-2026-10-11.jsonl")).unwrap();
-        let b = fs::read_to_string(dir.path().join("touches-2026-10-12.jsonl")).unwrap();
+        let a = fs::read_to_string(dir.path().join("cursor-2026-10-11.jsonl")).unwrap();
+        let b = fs::read_to_string(dir.path().join("cursor-2026-10-12.jsonl")).unwrap();
         assert_eq!(a.lines().count(), 2);
         assert_eq!(b.lines().count(), 1);
         assert!(b.starts_with(r#"{"t":3,"#));
@@ -90,7 +125,7 @@ mod tests {
         let dir = tempdir().unwrap();
         DailyWriter::new(dir.path().to_path_buf()).write(day(11), &[rec(1)]).unwrap();
         DailyWriter::new(dir.path().to_path_buf()).write(day(11), &[rec(2)]).unwrap();
-        let a = fs::read_to_string(dir.path().join("touches-2026-10-11.jsonl")).unwrap();
+        let a = fs::read_to_string(dir.path().join("cursor-2026-10-11.jsonl")).unwrap();
         assert_eq!(a.lines().count(), 2);
     }
 
@@ -101,5 +136,51 @@ mod tests {
         DailyWriter::new(dir.path().to_path_buf()).write(day(11), &[rec(1)]).unwrap();
         assert!(text_for(dir.path(), day(11)).starts_with(r#"{"t":1,"#));
         assert_eq!(text_for(dir.path(), day(12)), "");
+    }
+
+    #[test]
+    fn days_text_reads_only_cursor_files() {
+        let dir = tempdir().unwrap();
+        for name in [
+            "touches-2026-11-03.jsonl",
+            "cursor-2026-11-02.jsonl",
+            "cursor-2026-11-03.jsonl",
+            "cursor-2026-11-01.jsonl",
+        ] {
+            fs::write(dir.path().join(name), format!("{name}\n")).unwrap();
+        }
+        let from = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        assert_eq!(
+            days_text(dir.path(), from),
+            "cursor-2026-11-02.jsonl\ncursor-2026-11-03.jsonl\n"
+        );
+    }
+
+    #[test]
+    fn a_directory_that_does_not_exist_yet_is_created_on_first_write() {
+        let root = tempdir().unwrap();
+        let fresh = root.path().join("never").join("made");
+
+        // Nothing there: reads are empty, not errors.
+        assert_eq!(text_for(&fresh, day(11)), "");
+        assert_eq!(days_text(&fresh, day(1)), "");
+        assert_eq!(load_snapshot(&fresh), "");
+
+        DailyWriter::new(fresh.clone()).write(day(11), &[rec(1), rec(2)]).unwrap();
+        assert_eq!(text_for(&fresh, day(11)).lines().count(), 2);
+        assert_eq!(days_text(&fresh, day(1)).lines().count(), 2);
+
+        let other = root.path().join("also").join("new");
+        save_snapshot(&other, "{\"a\":1}").unwrap();
+        assert_eq!(load_snapshot(&other), "{\"a\":1}");
+    }
+
+    #[test]
+    fn snapshot_round_trips() {
+        let dir = tempdir().unwrap();
+        assert_eq!(load_snapshot(dir.path()), "");
+        save_snapshot(dir.path(), "{\"a\":1}").unwrap();
+        assert_eq!(load_snapshot(dir.path()), "{\"a\":1}");
+        assert!(dir.path().join("city-snapshot.json").exists());
     }
 }

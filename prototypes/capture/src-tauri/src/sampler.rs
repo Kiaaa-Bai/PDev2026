@@ -1,5 +1,5 @@
-//! Turns raw contact frames into records: flips y to a top-left origin,
-//! clamps and rounds positions, writes down/up always and moves at most
+//! Turns raw contact frames into records: maps positions to record
+//! coordinates (see `Coords`), writes down/up always and moves at most
 //! once per `min_move_ms`, and lifts fingers that vanish without an up.
 
 use crate::record::{map_state, Contact, Phase, TouchRecord, TouchState};
@@ -15,14 +15,34 @@ struct Track {
     y: f64,
 }
 
+/// How contact positions become record positions.
+#[derive(Clone, Copy)]
+enum Coords {
+    /// Trackpad: 0–1 with the origin at the bottom-left. Flipped to a top-left
+    /// origin, clamped, rounded to 0.001.
+    Unit,
+    /// Pointer: global screen points, origin top-left. Rounded to 0.1,
+    /// no flip, no clamp.
+    Points,
+}
+
 pub struct Sampler {
     min_move_ms: u64,
+    coords: Coords,
     active: HashMap<i32, Track>,
 }
 
 impl Sampler {
+    /// Trackpad contacts (0–1, bottom-left origin). Unused now that the cursor
+    /// is the only source; kept for the multitouch code that stays in the repo.
+    #[allow(dead_code)]
     pub fn new(min_move_ms: u64) -> Self {
-        Self { min_move_ms, active: HashMap::new() }
+        Self { min_move_ms, coords: Coords::Unit, active: HashMap::new() }
+    }
+
+    /// Pointer contacts in global screen points.
+    pub fn new_points(min_move_ms: u64) -> Self {
+        Self { min_move_ms, coords: Coords::Points, active: HashMap::new() }
     }
 
     pub fn process(&mut self, now_ms: u64, contacts: &[Contact]) -> Vec<TouchRecord> {
@@ -30,7 +50,7 @@ impl Sampler {
         let mut seen = HashSet::new();
         for c in contacts {
             let Some(phase) = map_state(c.state) else { continue };
-            let (x, y) = to_record_xy(c);
+            let (x, y) = self.coords.to_record_xy(c);
             match phase {
                 Phase::Down | Phase::Move => {
                     seen.insert(c.id);
@@ -102,11 +122,22 @@ fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
 
-/// Framework position (origin bottom-left) → record position (origin top-left).
-fn to_record_xy(c: &Contact) -> (f64, f64) {
-    let x = (c.x as f64).clamp(0.0, 1.0);
-    let y = (1.0 - c.y as f64).clamp(0.0, 1.0);
-    (round3(x), round3(y))
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+impl Coords {
+    fn to_record_xy(self, c: &Contact) -> (f64, f64) {
+        match self {
+            // Framework position (origin bottom-left) → record position (origin top-left).
+            Coords::Unit => {
+                let x = (c.x as f64).clamp(0.0, 1.0);
+                let y = (1.0 - c.y as f64).clamp(0.0, 1.0);
+                (round3(x), round3(y))
+            }
+            Coords::Points => (round1(c.x as f64), round1(c.y as f64)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +233,12 @@ mod tests {
         let mut s = Sampler::new(33);
         let out = s.process(1000, &[c(1, 3, 1.02, 0.12345)]);
         assert_eq!((out[0].x, out[0].y), (1.0, 0.877));
+    }
+
+    #[test]
+    fn points_mode_keeps_coordinates() {
+        let mut s = Sampler::new_points(33);
+        let out = s.process(1000, &[c(1, 3, 2560.25, -40.0)]);
+        assert_eq!((out[0].x, out[0].y), (2560.3, -40.0));
     }
 }
