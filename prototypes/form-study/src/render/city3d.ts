@@ -16,7 +16,7 @@ import {
   MODEL_NAMES,
   ROLLER,
   viewRadius,
-  wheelZoom,
+  wheelZoomTarget,
   type Looks,
   type Placement,
 } from "./pieces";
@@ -313,8 +313,9 @@ export class CityView3D {
     c.addEventListener(
       "wheel",
       (e) => {
-        e.preventDefault();
-        this.zoomTo(wheelZoom(this.halfHeight, e.deltaY, e.deltaMode, e.ctrlKey));
+        e.preventDefault(); // even a sideways scroll, which only does not count as a zoom
+        const h = wheelZoomTarget(this.halfHeight, e.deltaY, e.deltaMode, e.ctrlKey);
+        if (h !== null) this.zoomTo(h);
       },
       { passive: false },
     );

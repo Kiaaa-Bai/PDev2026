@@ -31,6 +31,7 @@ import {
   SHOP_POOL,
   viewRadius,
   wheelZoom,
+  wheelZoomTarget,
   type Placement,
   type Turns,
 } from "../src/render/pieces";
@@ -723,6 +724,23 @@ describe("zoom", () => {
       const px = wheelZoom(10, 3, 0, false);
       expect(wheelZoom(10, 3, 1, false)).toBeGreaterThan(px);
       expect(wheelZoom(10, 3, 2, false)).toBeGreaterThan(wheelZoom(10, 3, 1, false));
+    });
+  });
+
+  describe("wheelZoomTarget", () => {
+    it("is wheelZoom for a wheel event that moves up or down", () => {
+      expect(wheelZoomTarget(10, 50, 0, false)).toBe(wheelZoom(10, 50, 0, false));
+      expect(wheelZoomTarget(10, -3, 1, true)).toBe(wheelZoom(10, -3, 1, true));
+    });
+
+    it("is null for one with no vertical movement, which is no zoom input: a sideways scroll, or a pinch's rest", () => {
+      expect(wheelZoomTarget(10, 0, 0, false)).toBeNull();
+      expect(wheelZoomTarget(10, -0, 0, true)).toBeNull();
+      expect(wheelZoomTarget(40, 0, 1, false)).toBeNull();
+    });
+
+    it("still counts one pressed against the zoom limit, which is a zoom input that changes nothing", () => {
+      expect(wheelZoomTarget(5, -10_000, 0, false)).toBe(5);
     });
   });
 

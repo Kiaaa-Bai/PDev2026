@@ -255,6 +255,14 @@ export function wheelZoom(halfHeight: number, deltaY: number, deltaMode: number,
   return clampHalfHeight(halfHeight * Math.exp(px * (pinch ? PINCH_RATE : SCROLL_RATE)));
 }
 
+/**
+ * What a wheel event zooms to, or null when it is no zoom input: with no vertical movement (a sideways scroll)
+ * it must not count, or it would restart the hold on a zoomed-out view and cancel the ease back.
+ */
+export function wheelZoomTarget(halfHeight: number, deltaY: number, deltaMode: number, pinch: boolean): number | null {
+  return deltaY === 0 ? null : wheelZoom(halfHeight, deltaY, deltaMode, pinch);
+}
+
 /** A zoomed-out view settles back to the close-up in this long. */
 export const EASE_BACK_MS = 600;
 
