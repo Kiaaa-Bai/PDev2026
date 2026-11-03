@@ -6,6 +6,15 @@ export function hourParam(search: string): number | null {
   return Number.isFinite(hour) ? hour : null;
 }
 
+const DAY_MS = 24 * 3_600_000;
+/** Holding the fast-forward key this long runs the sky through one whole day. */
+const FAST_DAY_MS = 12_000;
+
+/** How far ahead of now the sky is shown after holding the fast-forward key for `heldMs`; wraps after a day. */
+export function fastForward(heldMs: number): number {
+  return ((heldMs / FAST_DAY_MS) * DAY_MS) % DAY_MS;
+}
+
 /**
  * The moment the sky follows: today at `hour` when that is given (the dev override), else a replayed
  * recording's own time (`replayed`, ms, null when nothing is being replayed), else `now`.

@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Application } from "pixi.js";
+import { fastForward } from "./clock";
 import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
 import { Feeder, liveTime } from "./drive";
@@ -77,7 +78,10 @@ async function boot() {
   const saved = await loadCity();
   const city = saved ?? new CitySim(CITY);
   const sims: Sim[] = [city];
-  const cityView = new CityView3D(city, PANEL_W, PANEL_H);
+  // Holding T fast-forwards the sky through a day (a preview; the city itself keeps the real time).
+  let heldSince: number | null = null;
+  const skyClock = () => new Date(Date.now() + (heldSince === null ? 0 : fastForward(performance.now() - heldSince)));
+  const cityView = new CityView3D(city, PANEL_W, PANEL_H, skyClock);
   await cityView.load();
   cityView.attachZoom();
   const heatView = new HeatView(heat, fingers);
@@ -142,9 +146,18 @@ async function boot() {
   }
 
   window.addEventListener("keydown", (e) => {
+    if (e.key === "t" || e.key === "T") {
+      heldSince ??= performance.now();
+      return;
+    }
     const n = Number(e.key);
     if (Number.isInteger(n) && n >= 1 && n <= TABS.length) show(n - 1);
   });
+  // Letting go of T, or leaving the window, puts the sky back on the real time.
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "t" || e.key === "T") heldSince = null;
+  });
+  window.addEventListener("blur", () => (heldSince = null));
   show(active);
 
   let hud = "";

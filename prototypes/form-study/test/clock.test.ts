@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hourParam, skyTime } from "../src/clock";
+import { fastForward, hourParam, skyTime } from "../src/clock";
 
 describe("hourParam", () => {
   it("reads ?hour= as hours, with fractions", () => {
@@ -34,5 +34,23 @@ describe("skyTime", () => {
     expect([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()]).toEqual([2026, 10, 3, 22, 0]);
     const half = skyTime(19.5, null, now);
     expect([half.getHours(), half.getMinutes()]).toEqual([19, 30]);
+  });
+});
+
+describe("fastForward", () => {
+  const HOUR = 3_600_000;
+
+  it("adds nothing until the key has been held", () => {
+    expect(fastForward(0)).toBe(0);
+  });
+
+  it("runs a whole day in twelve seconds of holding", () => {
+    expect(fastForward(500)).toBe(HOUR);
+    expect(fastForward(6_000)).toBe(12 * HOUR);
+  });
+
+  it("starts the day over instead of running past it", () => {
+    expect(fastForward(12_000)).toBe(0);
+    expect(fastForward(13_000)).toBe(2 * HOUR);
   });
 });
