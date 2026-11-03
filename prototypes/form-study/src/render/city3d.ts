@@ -2,9 +2,9 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { cellKey, type CitySim } from "../sims/city";
-import { AMBIENT_DAY, skyAt, type SkyState, SUN_DAY } from "./looks";
+import { AMBIENT_DAY, sameSky, SKY_DAY, skyAt, type SkyState, SUN_COLOUR_DAY, SUN_DAY, WINDOW_LIT } from "./looks";
 import { type NightUniform, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
-import { layoutCells, layoutKey, MODEL_NAMES, ROLLER, type Looks } from "./pieces";
+import { lampHead, layoutCells, layoutKey, LIGHT, MODEL_NAMES, ROLLER, type Looks, type Placement } from "./pieces";
 
 const urls = import.meta.glob("../assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
 
@@ -54,6 +54,23 @@ const MAX_FPS = 30;
 /** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
 const ELEVATION = Math.PI / 6;
 const CAMERA_DISTANCE = 50;
+/** A streetlight's glow at night: a soft warm disc this many tiles across, centred on the lamp. */
+const GLOW_SIZE = 1.1;
+
+/** A white disc that fades to nothing at its edge, to be tinted and added to the picture. */
+function glowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 64;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d canvas to draw the lamp glow with");
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.2, "rgba(255,255,255,0.6)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(canvas);
+}
 
 /**
  * The city as live 3D models seen from above at an angle, the camera following the roller.
@@ -70,6 +87,10 @@ export class CityView3D {
   private roller!: THREE.Mesh;
   private hemisphere: THREE.HemisphereLight;
   private sunLight: THREE.DirectionalLight;
+  /** One glow disc per streetlight, drawn only at night; they face the camera, which never turns. */
+  private glow: THREE.InstancedMesh;
+  private glowMaterial: THREE.MeshBasicMaterial;
+  private glowFacing = new THREE.Quaternion();
   /** How lit the windows are, shared by every model's material. */
   private night: NightUniform = { value: 0 };
   /** The sky last put on the lights, the clock and the windows, and the minute it was looked up in. */
@@ -97,11 +118,25 @@ export class CityView3D {
     this.canvas = this.renderer.domElement;
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     this.setHalfHeight(DEFAULT_HALF_HEIGHT);
-    this.hemisphere = new THREE.HemisphereLight(0xe8f4ff, 0x6a8a50, AMBIENT_DAY);
+    this.hemisphere = new THREE.HemisphereLight(SKY_DAY, 0x6a8a50, AMBIENT_DAY);
     this.scene.add(this.hemisphere);
-    this.sunLight = new THREE.DirectionalLight(0xffffff, SUN_DAY);
+    this.sunLight = new THREE.DirectionalLight(SUN_COLOUR_DAY, SUN_DAY);
     this.sunLight.position.set(4, 10, 2);
     this.scene.add(this.sunLight);
+    this.glowMaterial = new THREE.MeshBasicMaterial({
+      map: glowTexture(),
+      color: WINDOW_LIT,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.glowFacing.setFromUnitVectors(
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(Math.cos(ELEVATION) * Math.SQRT1_2, Math.sin(ELEVATION), Math.cos(ELEVATION) * Math.SQRT1_2),
+    );
+    this.glow = this.makeGlow(64);
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshLambertMaterial({ color: 0x8ccf68 }));
     this.ground.rotation.x = -Math.PI / 2;
     this.scene.add(this.ground);
@@ -134,10 +169,41 @@ export class CityView3D {
     for (const m of of("commercial/")) patchWindows(m.mat, this.night);
   }
 
+  /** An instanced mesh of `capacity` glow discs, none placed yet. */
+  private makeGlow(capacity: number): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), this.glowMaterial, capacity);
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    mesh.visible = (this.sky?.night ?? 0) > 0;
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  /** Put a glow disc on the lamp of every streetlight in `placed`. */
+  private placeGlow(placed: readonly Placement[]): void {
+    const lamps = placed.filter((p) => p.model === LIGHT);
+    if (this.glow.instanceMatrix.count < lamps.length) {
+      this.scene.remove(this.glow);
+      this.glow.geometry.dispose();
+      this.glow.dispose();
+      this.glow = this.makeGlow(Math.max(64, lamps.length * 2));
+    }
+    const m = new THREE.Matrix4();
+    const at = new THREE.Vector3();
+    const size = new THREE.Vector3(GLOW_SIZE, GLOW_SIZE, GLOW_SIZE);
+    lamps.forEach((p, i) => {
+      const head = lampHead(p);
+      this.glow.setMatrixAt(i, m.compose(at.set(head.x, head.y, head.z), this.glowFacing, size));
+    });
+    this.glow.count = lamps.length;
+    this.glow.instanceMatrix.needsUpdate = true;
+  }
+
   /**
-   * Look up the sky for the time of day, once in each minute of the clock, and put it on the clear
-   * colour, the two lights and the windows. Returns true when that is different from what was drawn:
-   * it stays the same through the full day and the full night, so a parked city is not redrawn.
+   * Look up the sky for the time of day, once in each minute of the clock, and put it on the two
+   * lights (their colours and strengths), the windows and the streetlight glow. Returns true when
+   * that is different from what was drawn: it stays the same through the full day and the full
+   * night, so a parked city is not redrawn.
    */
   private updateSky(): boolean {
     const d = this.clock();
@@ -145,13 +211,15 @@ export class CityView3D {
     if (minute === this.skyMinute) return false;
     this.skyMinute = minute;
     const s = skyAt(d);
-    const was = this.sky;
-    if (was && s.sky === was.sky && s.sun === was.sun && s.ambient === was.ambient && s.night === was.night) return false;
+    if (this.sky && sameSky(s, this.sky)) return false;
     this.sky = s;
-    this.renderer.setClearColor(s.sky);
-    this.sunLight.intensity = s.sun;
+    this.hemisphere.color.setHex(s.sky);
     this.hemisphere.intensity = s.ambient;
+    this.sunLight.color.setHex(s.sunColour);
+    this.sunLight.intensity = s.sun;
     this.night.value = s.night;
+    this.glowMaterial.opacity = s.night;
+    this.glow.visible = s.night > 0;
     return true;
   }
 
@@ -210,6 +278,7 @@ export class CityView3D {
       if (!list) buckets.set(p.model, (list = []));
       list.push({ m, colour: p.colour });
     }
+    this.placeGlow(placed);
     for (const [name, mesh] of this.meshes) {
       if (!buckets.has(name)) mesh.count = 0;
     }

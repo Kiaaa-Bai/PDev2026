@@ -11,7 +11,11 @@ import {
   SKY_DAY,
   SKY_DUSK,
   SKY_NIGHT,
+  sameSky,
   skyAt,
+  SUN_COLOUR_DAY,
+  SUN_COLOUR_DUSK,
+  SUN_COLOUR_NIGHT,
   SUN_DAY,
   SUN_NIGHT,
   WHITE,
@@ -78,8 +82,8 @@ const sky = (h: number, m = 0) => skyAt(new Date(2026, 10, 3, h, m));
 
 describe("skyAt", () => {
   it("is full day at noon and full night at 23:00", () => {
-    expect(sky(12)).toEqual({ sky: SKY_DAY, sun: SUN_DAY, ambient: AMBIENT_DAY, night: 0 });
-    expect(sky(23)).toEqual({ sky: SKY_NIGHT, sun: SUN_NIGHT, ambient: AMBIENT_NIGHT, night: 1 });
+    expect(sky(12)).toEqual({ sky: SKY_DAY, sunColour: SUN_COLOUR_DAY, sun: SUN_DAY, ambient: AMBIENT_DAY, night: 0 });
+    expect(sky(23)).toEqual({ sky: SKY_NIGHT, sunColour: SUN_COLOUR_NIGHT, sun: SUN_NIGHT, ambient: AMBIENT_NIGHT, night: 1 });
   });
 
   it("is half way at 06:00, with the sky at its dusk colour", () => {
@@ -88,6 +92,7 @@ describe("skyAt", () => {
     expect(s.sun).toBeCloseTo((SUN_DAY + SUN_NIGHT) / 2);
     expect(s.ambient).toBeCloseTo((AMBIENT_DAY + AMBIENT_NIGHT) / 2);
     expect(s.sky).toBe(SKY_DUSK);
+    expect(s.sunColour).toBe(SUN_COLOUR_DUSK);
   });
 
   it("changes over at 05:00 to 07:00 and 18:00 to 20:00, and is steady outside them", () => {
@@ -118,16 +123,60 @@ describe("skyAt", () => {
     expect(AMBIENT_NIGHT).toBeLessThan(AMBIENT_DAY);
   });
 
-  it("always gives a colour that is a whole 24-bit number", () => {
+  it("always gives colours that are whole 24-bit numbers", () => {
     for (let m = 0; m < 24 * 60; m++) {
-      const c = sky(0, m).sky;
-      expect(Number.isInteger(c)).toBe(true);
-      expect(c).toBeGreaterThanOrEqual(0);
-      expect(c).toBeLessThanOrEqual(0xffffff);
+      for (const c of [sky(0, m).sky, sky(0, m).sunColour]) {
+        expect(Number.isInteger(c)).toBe(true);
+        expect(c).toBeGreaterThanOrEqual(0);
+        expect(c).toBeLessThanOrEqual(0xffffff);
+      }
     }
   });
 
-  it("has three different sky colours", () => {
+  it("has three different sky colours and three different sun colours", () => {
     expect(new Set([SKY_DAY, SKY_DUSK, SKY_NIGHT]).size).toBe(3);
+    expect(new Set([SUN_COLOUR_DAY, SUN_COLOUR_DUSK, SUN_COLOUR_NIGHT]).size).toBe(3);
+  });
+
+  // The light's colour moves through the day, whatever the constants are: neutral at noon, warm at
+  // dusk (red above blue), cool at night (blue above red). A constant colour cannot pass all three.
+  const rgb = (c: number) => ({ r: (c >> 16) & 255, g: (c >> 8) & 255, b: c & 255 });
+
+  it("lights neutral at noon, warm at 19:00 and cool at 23:00", () => {
+    for (const pick of [(s: ReturnType<typeof sky>) => s.sunColour, (s: ReturnType<typeof sky>) => s.sky]) {
+      const noon = rgb(pick(sky(12)));
+      const dusk = rgb(pick(sky(19)));
+      const night = rgb(pick(sky(23)));
+      expect(Math.abs(noon.r - noon.b)).toBeLessThanOrEqual(24); // close to neutral by day
+      expect(dusk.r).toBeGreaterThan(dusk.b + 30);
+      expect(night.b).toBeGreaterThan(night.r + 30);
+    }
+  });
+
+  it("moves the light colour smoothly from warm at dusk to cool at night", () => {
+    let before = rgb(sky(19, 0).sunColour);
+    for (let m = 1; m <= 60; m++) {
+      const now = rgb(sky(19, m).sunColour);
+      expect(now.b - now.r).toBeGreaterThanOrEqual(before.b - before.r); // never turns warmer on the way to night
+      before = now;
+    }
+    expect(before.b).toBeGreaterThan(before.r);
+  });
+});
+
+describe("sameSky", () => {
+  const base = sky(19);
+
+  it("is true for the same values, and false when any one of them differs", () => {
+    expect(sameSky(base, { ...base })).toBe(true);
+    expect(sameSky(base, sky(19, 0))).toBe(true);
+    for (const key of Object.keys(base) as (keyof typeof base)[]) expect(sameSky(base, { ...base, [key]: base[key] + 1 }), key).toBe(false);
+  });
+
+  it("holds through the full day and the full night, and not through the changeover", () => {
+    expect(sameSky(sky(9), sky(15, 30))).toBe(true);
+    expect(sameSky(sky(21), sky(3))).toBe(true);
+    expect(sameSky(sky(18, 0), sky(18, 1))).toBe(false);
+    expect(sameSky(sky(5, 0), sky(5, 1))).toBe(false);
   });
 });

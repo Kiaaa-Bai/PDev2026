@@ -29,25 +29,35 @@ export const roofColour = (houseTier: 1 | 2 | 3, built: number): number => (hous
 /** The warm light of a lit window. */
 export const WINDOW_LIT = 0xffd27a;
 
-/** The sky behind the city at full day, at dawn and dusk (half way between day and night), and at full night. */
-export const SKY_DAY = 0x9fd3e8;
-export const SKY_DUSK = 0xe0907a;
-export const SKY_NIGHT = 0x0b1230;
+/**
+ * The sky light's colour (the hemisphere light, which every surface facing up or sideways takes some of)
+ * at full day, at dawn and dusk (half way between day and night), and at full night.
+ */
+export const SKY_DAY = 0xe8f4ff;
+export const SKY_DUSK = 0xffc4a0;
+export const SKY_NIGHT = 0x3048d8;
+
+/** The sun's colour (the directional light): neutral by day, orange at dawn and dusk, cool moonlight at night. */
+export const SUN_COLOUR_DAY = 0xffffff;
+export const SUN_COLOUR_DUSK = 0xffa866;
+export const SUN_COLOUR_NIGHT = 0x6a7cff;
 
 /** Light intensities at full day and full night: the sun (directional light) and the sky and ground glow (hemisphere light). */
 export const SUN_DAY = 1.8;
-export const SUN_NIGHT = 0.2;
+export const SUN_NIGHT = 0.6;
 export const AMBIENT_DAY = 1.6;
-export const AMBIENT_NIGHT = 0.45;
+export const AMBIENT_NIGHT = 1.3;
 
 export interface SkyState {
-  /** Sky colour as 0xRRGGBB. */
+  /** Colour of the sky light, 0xRRGGBB. */
   sky: number;
+  /** Colour of the sun light, 0xRRGGBB. */
+  sunColour: number;
   /** Intensity of the directional light. */
   sun: number;
   /** Intensity of the hemisphere light. */
   ambient: number;
-  /** 0 in full day, 1 in full night: how far the windows are lit. */
+  /** 0 in full day, 1 in full night: how far the windows and streetlights are lit. */
   night: number;
 }
 
@@ -61,18 +71,28 @@ function mixColour(a: number, b: number, t: number): number {
   return out;
 }
 
+/** Day, then dusk half way through the changeover, then night: `night` is 0 for the first colour and 1 for the last. */
+const through = (day: number, dusk: number, night: number, n: number) =>
+  n < 0.5 ? mixColour(day, dusk, n * 2) : mixColour(dusk, night, n * 2 - 1);
+
 /**
  * The sky for a moment by the local clock. Night is full until 05:00, falls to day by 07:00, stays
- * day until 18:00 and rises to full night by 20:00, in straight lines. The sun and the glow follow
- * `night`; the sky goes day to dusk to night, so half way is the dusk colour.
+ * day until 18:00 and rises to full night by 20:00, in straight lines. The intensities follow
+ * `night`; the sky and sun colours go day to dusk to night, so half way is the dusk colour.
  */
 export function skyAt(d: Date): SkyState {
   const h = d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
   const night = h < 5 || h >= 20 ? 1 : h < 7 ? (7 - h) / 2 : h <= 18 ? 0 : (h - 18) / 2;
   return {
-    sky: night < 0.5 ? mixColour(SKY_DAY, SKY_DUSK, night * 2) : mixColour(SKY_DUSK, SKY_NIGHT, night * 2 - 1),
+    sky: through(SKY_DAY, SKY_DUSK, SKY_NIGHT, night),
+    sunColour: through(SUN_COLOUR_DAY, SUN_COLOUR_DUSK, SUN_COLOUR_NIGHT, night),
     sun: mix(SUN_DAY, SUN_NIGHT, night),
     ambient: mix(AMBIENT_DAY, AMBIENT_NIGHT, night),
     night,
   };
+}
+
+/** Whether two skies would draw the same picture: every value alike. */
+export function sameSky(a: SkyState, b: SkyState): boolean {
+  return a.sky === b.sky && a.sunColour === b.sunColour && a.sun === b.sun && a.ambient === b.ambient && a.night === b.night;
 }

@@ -85,6 +85,12 @@ export const LIGHT_INSET = 0.42;
 /** Drawn this much larger than modelled: at 0.05 wide the pole all but vanishes at the city's zoom. */
 export const LIGHT_SCALE = 1.5;
 
+/**
+ * Where the lamp is on the streetlight model, before scaling: 0.6 up, at the end of the arm that
+ * reaches 0.2 from the pole towards -z (the head is the last 0.1 of it, centred 0.113 out).
+ */
+export const LAMP_HEAD = { height: 0.6, reach: 0.113 } as const;
+
 /** The edge each quarter-turn puts the pole on, as a step (dx, dy): S, E, N, W. */
 const LIGHT_SIDE = [
   [0, 1],
@@ -92,6 +98,20 @@ const LIGHT_SIDE = [
   [0, -1],
   [-1, 0],
 ] as const;
+
+/** The arm's direction on the ground for each quarter-turn: -z at rotation 0, then N -> W -> S -> E. */
+const LIGHT_ARM = [
+  [0, -1],
+  [-1, 0],
+  [0, 1],
+  [1, 0],
+] as const;
+
+/** The lamp of a streetlight placement in the 3D scene: x and z on the ground, y up. */
+export function lampHead(p: Placement): { x: number; y: number; z: number } {
+  const [dx, dz] = LIGHT_ARM[p.turns];
+  return { x: p.x + dx * LAMP_HEAD.reach * p.scale, y: LAMP_HEAD.height * p.scale, z: p.y + dz * LAMP_HEAD.reach * p.scale };
+}
 
 /** Every model the city draws, by path under assets/kenney (no extension). */
 export const MODEL_NAMES: readonly string[] = [...ROAD_BASE.map(([name]) => name), LIGHT, ...HOUSE_POOLS.flat(), ROLLER.model];

@@ -3,6 +3,8 @@ import {
   houseTurns,
   housePiece,
   HOUSE_POOLS,
+  lampHead,
+  LAMP_HEAD,
   layoutCells,
   layoutKey,
   LIGHT_SCALE,
@@ -320,5 +322,29 @@ describe("layoutCells looks", () => {
       const recoloured = placed.map((p, i) => (i === 0 ? { ...p, colour: 0x123456 } : p));
       expect(layoutKey(recoloured)).not.toBe(layoutKey(placed));
     });
+  });
+});
+
+describe("lampHead", () => {
+  const lamp = (turns: 0 | 1 | 2 | 3) => ({ model: "roads/light-square", x: 10, y: 20, turns, scale: LIGHT_SCALE, colour: WHITE });
+
+  it("is up at the top of the pole, scaled with it", () => {
+    for (const turns of [0, 1, 2, 3] as const) expect(lampHead(lamp(turns)).y).toBeCloseTo(LAMP_HEAD.height * LIGHT_SCALE);
+  });
+
+  it("is where the arm reaches, from the pole towards the road, whichever way the piece turns", () => {
+    const reach = LAMP_HEAD.reach * LIGHT_SCALE;
+    // the arm points -z (north) at rotation 0 and each +90 turn takes it N -> W -> S -> E
+    const arm = [
+      [0, -1],
+      [-1, 0],
+      [0, 1],
+      [1, 0],
+    ];
+    for (const turns of [0, 1, 2, 3] as const) {
+      const head = lampHead(lamp(turns));
+      expect(head.x).toBeCloseTo(10 + arm[turns][0] * reach);
+      expect(head.z).toBeCloseTo(20 + arm[turns][1] * reach);
+    }
   });
 });

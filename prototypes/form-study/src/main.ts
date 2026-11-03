@@ -1,4 +1,5 @@
 import "./style.css";
+import { hourParam, skyTime } from "./clock";
 import { CITY } from "./config";
 import { parseJsonl, toStrokes } from "./data";
 import { attachLive, Feeder, inputSims } from "./drive";
@@ -16,17 +17,13 @@ interface World {
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 const host = document.querySelector<HTMLElement>("#panels")!;
 
-/** Dev only: `?hour=22` (or `?hour=19.5`) shows the city at that time of day, whatever the clock says. */
-const hour = parseFloat(new URLSearchParams(location.search).get("hour") ?? "");
-const clock = Number.isFinite(hour)
-  ? () => {
-      const d = new Date();
-      d.setHours(Math.floor(hour), Math.round((hour % 1) * 60), 0, 0);
-      return d;
-    }
-  : undefined;
+/** Dev only: `?hour=22` (or `?hour=19.5`) shows the city at that time of day, whatever else the clock says. */
+const hour = hourParam(location.search);
 
 async function boot() {
+  // The city's own clock while a recording is replayed, so a day recorded in the evening is shown in the evening.
+  let replayed: CitySim | null = null;
+  const clock = () => skyTime(hour, replayed && replayed.time() > 0 ? replayed.time() : null);
   const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H, clock);
   await view.load();
   const panel = createPanel(host, "City", view.canvas);
@@ -34,6 +31,7 @@ async function boot() {
   /** A fresh city on the view: live (the mouse drives it) or file (a recording drives it). */
   function makeWorld(mode: World["mode"]): World {
     const city = new CitySim(CITY);
+    replayed = mode === "file" ? city : null;
     view.setSim(city);
     const sims = [city];
     return { mode, sims, feeder: new Feeder(() => sims) };
