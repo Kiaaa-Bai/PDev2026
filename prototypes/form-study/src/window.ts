@@ -174,4 +174,8 @@ async function boot() {
   window.addEventListener("beforeunload", () => saveCity(city)); // best effort: the window may close first
 }
 
-boot();
+// A model that fails to load (or anything else in boot) would leave a blank window: say why.
+boot().catch((e: unknown) => {
+  console.error(e);
+  hudEl.textContent = `Could not start: ${e instanceof Error ? e.message : String(e)}`;
+});

@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { cellKey, type CitySim } from "../sims/city";
-import { HOUSE_POOLS, HOUSE_SCALE, housePiece, houseTurns, ROAD_BASE, roadPiece, ROLLER } from "./pieces";
+import { layoutCells, layoutKey, MODEL_NAMES, ROLLER } from "./pieces";
 
 const urls = import.meta.glob("../assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
 
@@ -15,7 +15,12 @@ interface Model {
 async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
   const url = urls[`../assets/kenney/${path}.glb`];
   if (!url) throw new Error(`missing model ${path}`);
-  const gltf = await loader.loadAsync(url);
+  let gltf;
+  try {
+    gltf = await loader.loadAsync(url);
+  } catch (e) {
+    throw new Error(`could not load model ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
   gltf.scene.updateMatrixWorld(true);
   const parts: THREE.BufferGeometry[] = [];
   let map: THREE.Texture | null = null;
@@ -29,7 +34,9 @@ async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
     parts.push(g.index ? g.toNonIndexed() : g);
     map ??= (mesh.material as THREE.MeshStandardMaterial).map;
   });
-  const geo = mergeGeometries(parts)!;
+  if (parts.length === 0) throw new Error(`model ${path} has no meshes`);
+  const geo = mergeGeometries(parts);
+  if (!geo) throw new Error(`model ${path} could not be merged into one geometry`);
   if (map) (map as THREE.Texture).colorSpace = THREE.SRGBColorSpace;
   return { geo, mat: new THREE.MeshLambertMaterial({ map }) };
 }
@@ -57,8 +64,12 @@ export class CityView3D {
   private models = new Map<string, Model>();
   private meshes = new Map<string, THREE.InstancedMesh>();
   private roller!: THREE.Mesh;
+  /** What the instances were last built for (roller cell, city version, 5 s bucket), and a hash of what that put on screen. */
   private builtFor = "";
-  private lastSig = "";
+  private builtKey: number | null = null;
+  /** Where the roller was when last drawn, and whether something outside it needs a draw. */
+  private lastMove = "";
+  private stale = true;
   private lastRender = -Infinity;
 
   constructor(
@@ -86,8 +97,7 @@ export class CityView3D {
   /** Loads every model; call once before the first update. */
   async load(): Promise<void> {
     const loader = new GLTFLoader();
-    const names = [...ROAD_BASE.map(([name]) => name), ...HOUSE_POOLS.flat(), ROLLER.model];
-    await Promise.all(names.map(async (n) => this.models.set(n, await loadModel(loader, n))));
+    await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(loader, n))));
     const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
     this.roller.scale.setScalar(ROLLER.scale);
@@ -99,6 +109,7 @@ export class CityView3D {
   setSim(sim: CitySim): void {
     this.sim = sim;
     this.builtFor = "";
+    this.builtKey = null;
     this.invalidate();
   }
 
@@ -116,7 +127,7 @@ export class CityView3D {
 
   /** Draw again on the next update, e.g. after the canvas was hidden. */
   invalidate(): void {
-    this.lastSig = "";
+    this.stale = true;
   }
 
   stat(): string {
@@ -124,32 +135,26 @@ export class CityView3D {
     return `${this.sim.road.size.toLocaleString()} road tiles · ${this.sim.houses(this.sim.time()).toLocaleString()} houses${parked}`;
   }
 
-  /** Rebuild instances around the roller: only cells within VIEW_RADIUS are drawn. */
-  private rebuild(t: number): void {
+  /**
+   * Rebuild instances around the roller: only cells within VIEW_RADIUS are drawn.
+   * Returns false, touching nothing, when that is exactly what is already on screen.
+   */
+  private rebuild(t: number): boolean {
     const at = this.sim.rollerAt();
-    const cx = Math.round(at.x);
-    const cy = Math.round(at.y);
+    const has = (x: number, y: number) => this.sim.road.has(cellKey(x, y));
+    const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), VIEW_RADIUS);
+    const key = layoutKey(placed);
+    if (key === this.builtKey) return false;
+    this.builtKey = key;
+
     const buckets = new Map<string, THREE.Matrix4[]>();
     const up = new THREE.Vector3(0, 1, 0);
     const spin = [0, 1, 2, 3].map((k) => new THREE.Quaternion().setFromAxisAngle(up, (k * Math.PI) / 2));
-    const put = (model: string, x: number, y: number, turns: number, scale: number) => {
-      const m = new THREE.Matrix4().compose(new THREE.Vector3(x, 0, y), spin[turns], new THREE.Vector3(scale, scale, scale));
-      let list = buckets.get(model);
-      if (!list) buckets.set(model, (list = []));
+    for (const p of placed) {
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(p.x, 0, p.y), spin[p.turns], new THREE.Vector3(p.scale, p.scale, p.scale));
+      let list = buckets.get(p.model);
+      if (!list) buckets.set(p.model, (list = []));
       list.push(m);
-    };
-    const has = (x: number, y: number) => this.sim.road.has(cellKey(x, y));
-    for (let y = cy - VIEW_RADIUS; y <= cy + VIEW_RADIUS; y++) {
-      for (let x = cx - VIEW_RADIUS; x <= cx + VIEW_RADIUS; x++) {
-        if (has(x, y)) {
-          const mask = (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) | (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
-          const p = roadPiece(mask);
-          put(p.model, x, y, p.turns, 1);
-          continue;
-        }
-        const tier = this.sim.houseTier(x, y, t);
-        if (tier) put(housePiece(tier, x, y), x, y, houseTurns(has, x, y), HOUSE_SCALE[tier - 1]);
-      }
     }
     for (const [name, mesh] of this.meshes) {
       if (!buckets.has(name)) mesh.count = 0;
@@ -171,6 +176,7 @@ export class CityView3D {
       mesh.count = list.length;
       mesh.instanceMatrix.needsUpdate = true;
     }
+    return true;
   }
 
   /** Draw if something changed, at most MAX_FPS times a second. Returns true when it drew. */
@@ -178,15 +184,18 @@ export class CityView3D {
     if (!this.roller || now - this.lastRender < 1000 / MAX_FPS) return false;
     const t = this.sim.time();
     const at = this.sim.rollerAt();
-    // the instances are rebuilt when the roller has moved a few cells or the city changed
+    const move = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir}`;
+    let changed = this.stale || move !== this.lastMove;
+    // Check the surroundings when the roller has moved a few cells, the city changed, or every 5 s
+    // (a house can age into a bigger one). It only counts as a change if what is drawn differs.
     const cellSig = `${Math.round(at.x / 4)},${Math.round(at.y / 4)},${this.sim.version},${Math.floor(t / 5000)}`;
-    const sig = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir},${cellSig}`;
-    if (sig === this.lastSig) return false;
-    this.lastSig = sig;
     if (cellSig !== this.builtFor) {
       this.builtFor = cellSig;
-      this.rebuild(t);
+      if (this.rebuild(t)) changed = true;
     }
+    if (!changed) return false;
+    this.stale = false;
+    this.lastMove = move;
     this.roller.position.set(at.x, 0.02, at.y);
     this.roller.rotation.y = ROLLER.yaw[this.sim.roller.dir];
     const flat = CAMERA_DISTANCE * Math.cos(ELEVATION) * Math.SQRT1_2;

@@ -73,4 +73,7 @@ async function boot() {
   requestAnimationFrame(frame);
 }
 
-boot();
+boot().catch((e: unknown) => {
+  console.error(e);
+  statusEl.textContent = `Could not start: ${e instanceof Error ? e.message : String(e)}`;
+});

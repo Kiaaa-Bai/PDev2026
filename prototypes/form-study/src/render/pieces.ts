@@ -58,10 +58,65 @@ export function houseTurns(has: (x: number, y: number) => boolean, x: number, y:
   return has(x, y + 1) ? 2 : has(x + 1, y) ? 3 : has(x, y - 1) ? 0 : 1;
 }
 
-/** The roller: model, scale, and the yaw that points it along each heading (0 E, 1 S, 2 W, 3 N). */
+/**
+ * The roller: model, scale, and the yaw that points it along each heading (0 E, 1 S, 2 W, 3 N).
+ * The model's front (shovel) is at +z at rotation 0, and a yaw of θ turns +z to (sin θ, cos θ) in (x, z).
+ */
 export const ROLLER = {
   model: "car/tractor-shovel",
   scale: 0.4,
-  // the model drives toward -z at rotation 0
-  yaw: [-Math.PI / 2, Math.PI, Math.PI / 2, 0],
+  yaw: [Math.PI / 2, 0, -Math.PI / 2, Math.PI],
 } as const;
+
+/** Every model the city draws, by path under assets/kenney (no extension). */
+export const MODEL_NAMES: readonly string[] = [...ROAD_BASE.map(([name]) => name), ...HOUSE_POOLS.flat(), ROLLER.model];
+
+/** One model on one cell. */
+export interface Placement {
+  model: string;
+  x: number;
+  y: number;
+  turns: Turns;
+  scale: number;
+}
+
+/**
+ * What stands on the cells within `radius` of (cx, cy): road pieces joined to their
+ * neighbours, and houses turned to face a road. `tierAt` is 0 for no house.
+ */
+export function layoutCells(
+  has: (x: number, y: number) => boolean,
+  tierAt: (x: number, y: number) => 0 | 1 | 2 | 3,
+  cx: number,
+  cy: number,
+  radius: number,
+): Placement[] {
+  const out: Placement[] = [];
+  for (let y = cy - radius; y <= cy + radius; y++) {
+    for (let x = cx - radius; x <= cx + radius; x++) {
+      if (has(x, y)) {
+        const mask = (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) | (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
+        const p = roadPiece(mask);
+        out.push({ model: p.model, x, y, turns: p.turns, scale: 1 });
+        continue;
+      }
+      const tier = tierAt(x, y);
+      if (tier) out.push({ model: housePiece(tier, x, y), x, y, turns: houseTurns(has, x, y), scale: HOUSE_SCALE[tier - 1] });
+    }
+  }
+  return out;
+}
+
+const MODEL_INDEX = new Map(MODEL_NAMES.map((name, i) => [name, i]));
+
+/** A 32-bit hash of a layout: the same cells with the same models and turns hash alike (scale follows the model). */
+export function layoutKey(placed: readonly Placement[]): number {
+  let h = 0x811c9dc5;
+  for (const p of placed) {
+    h = Math.imul(h ^ (MODEL_INDEX.get(p.model) ?? -1), 0x01000193);
+    h = Math.imul(h ^ (p.x | 0), 0x01000193);
+    h = Math.imul(h ^ (p.y | 0), 0x01000193);
+    h = Math.imul(h ^ p.turns, 0x01000193);
+  }
+  return h >>> 0;
+}
