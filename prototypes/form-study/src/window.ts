@@ -6,7 +6,7 @@ import { Application } from "pixi.js";
 import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
 import { Feeder, liveTime } from "./drive";
-import { Heat, type Bounds } from "./heat";
+import { Heat } from "./heat";
 import { CityView3D } from "./render/city3d";
 import { HeatView } from "./render/heat";
 import { PANEL_H, PANEL_W } from "./render/panel";
@@ -69,11 +69,8 @@ async function boot() {
   await app.init({ width: PANEL_W, height: PANEL_H, background: "#111111", antialias: false, roundPixels: true, autoStart: false });
   const heatCanvas = app.canvas as HTMLCanvasElement;
 
-  // Records are screen points; the heat map wants them in 0–1 over the displays.
-  const [bx, by, bw, bh] = await invoke<number[]>("display_bounds");
-  const bounds: Bounds = [bx, by, bw, bh];
-  const unit = (v: number, from: number, size: number) => Math.min(1, Math.max(0, (v - from) / size));
-
+  // Records are screen points. The heat map keeps today's points and scales itself to the area they cover,
+  // so it needs no display sizes (and follows a display docked later); the fingers are drawn in the same points.
   const heat = new Heat(64, 40);
   const fingers = new Map<number, { x: number; y: number }>();
   // The city is the saved snapshot plus every record after it; with no snapshot, every day on disk.
@@ -92,8 +89,8 @@ async function boot() {
     if (r.state === "up") {
       fingers.delete(r.id);
     } else {
-      fingers.set(r.id, { x: unit(r.x, bx, bw), y: unit(r.y, by, bh) });
-      heat.addPoint(r.x, r.y, bounds);
+      fingers.set(r.id, { x: r.x, y: r.y });
+      heat.add(r.x, r.y, r.t);
     }
     feeder.push(r);
   }
@@ -114,7 +111,7 @@ async function boot() {
   const days = parseJsonl(await invoke<string>("days_text", { fromMs: Math.max(0, Math.floor(after)) }));
   for (const r of days) if (r.t > after) feeder.push(r);
   const today = parseJsonl(await invoke<string>("today_text"));
-  for (const r of today) if (r.state !== "up") heat.addPoint(r.x, r.y, bounds);
+  for (const r of today) if (r.state !== "up") heat.add(r.x, r.y, r.t);
   // Queued touches that already made it into the files were counted above.
   const lastT = (rs: TouchRecord[]) => (rs.length ? rs[rs.length - 1].t : -Infinity);
   const lastInFile = Math.max(lastT(days), lastT(today));
@@ -159,6 +156,7 @@ async function boot() {
     if (active === CITY_TAB) {
       cityView.update(now);
     } else {
+      heat.rollTo(Date.now()); // a window left open past midnight shows the new day, empty, before its first touch
       const sig = `${heat.version},${fingers.size}`;
       if (sig !== heatSig) {
         heatSig = sig;
