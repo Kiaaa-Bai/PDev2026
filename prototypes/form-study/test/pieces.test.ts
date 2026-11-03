@@ -1,21 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
+  BLOCK_POOL,
+  buildingPlacements,
+  COMMERCIAL_FOOTPRINT,
+  COMMERCIAL_SCALE,
+  commercialScale,
+  GARDEN_TREE,
   houseTurns,
   housePiece,
   HOUSE_POOLS,
+  HOUSE_SCALE,
   lampHead,
   LAMP_HEAD,
+  LANDMARK,
   layoutCells,
   layoutKey,
   LIGHT_SCALE,
   MODEL_NAMES,
+  PARK_PLANTER,
+  PARK_TREE,
   ROAD_BASE,
   roadPiece,
   ROLLER,
   rotMask,
+  SHOP_POOL,
+  type Placement,
+  type Turns,
 } from "../src/render/pieces";
-import { LANE_TINT, ROOF_COLOURS, WHITE } from "../src/render/looks";
+import { LANE_TINT, ROOF_COLOURS, roofBand, roofColour, WHITE } from "../src/render/looks";
 import { CitySim, DX, DY, cellKey, type CityConfig } from "../src/sims/city";
+import type { Kind } from "../src/sims/kinds";
 
 const baseOf = (model: string) => ROAD_BASE.find(([name]) => name === model)![1];
 
@@ -111,6 +125,17 @@ describe("housePiece", () => {
     for (let i = 0; i < 40; i++) seen.add(housePiece(3, i, 2 * i + 1));
     expect(seen.size).toBeGreaterThan(3);
   });
+
+  it("draws every tier's house from the suburban set, so the roof can take the hour's colour", () => {
+    for (const pool of HOUSE_POOLS) for (const m of pool) expect(m).toMatch(/^suburban\/building-type-[a-u]$/);
+    expect(HOUSE_POOLS).toHaveLength(3);
+    expect(HOUSE_SCALE).toHaveLength(3);
+  });
+
+  it("uses the o to u houses for tier 3, leaving out p and q, whose roofs have no recolourable part", () => {
+    expect(HOUSE_POOLS[2]).toEqual(["o", "r", "s", "t", "u"].map((c) => `suburban/building-type-${c}`));
+    expect(new Set(HOUSE_POOLS.flat()).size).toBe(HOUSE_POOLS.flat().length); // no house in two tiers
+  });
 });
 
 describe("ROLLER", () => {
@@ -131,6 +156,14 @@ describe("models", () => {
   it("has a file for every model the city draws", () => {
     expect(MODEL_NAMES.length).toBeGreaterThan(20);
     for (const name of MODEL_NAMES) expect(files, name).toHaveProperty([`../src/assets/kenney/${name}.glb`]);
+  });
+
+  it("lists every model a building kind can put down, once each", () => {
+    for (const name of [LANDMARK, PARK_TREE, PARK_PLANTER, GARDEN_TREE, ...SHOP_POOL, ...BLOCK_POOL, ...HOUSE_POOLS.flat()]) {
+      expect(MODEL_NAMES, name).toContain(name);
+    }
+    expect(LANDMARK).toBe("commercial/building-skyscraper-a");
+    expect(new Set(MODEL_NAMES).size).toBe(MODEL_NAMES.length);
   });
 });
 
@@ -156,6 +189,7 @@ describe("layoutCells and layoutKey", () => {
   const looksOf = (sim: CitySim) => ({
     driven: (x: number, y: number) => sim.road.get(cellKey(x, y)) ?? 0,
     built: (x: number, y: number) => sim.lots.get(cellKey(x, y)) ?? 0,
+    kind: (x: number, y: number) => sim.lotKind(x, y),
   });
   const layout = (sim: CitySim, t: number) =>
     layoutCells((x, y) => sim.hasRoad(x, y), (x, y) => sim.houseTier(x, y, t), 1, 0, 3, looksOf(sim));
@@ -201,10 +235,11 @@ describe("layoutCells looks", () => {
   };
   const at = (h: number, m = 0) => new Date(2026, 10, 3, h, m).getTime();
   /** A straight road along y = 0 from x = 0 to 6, every cell driven `driven` times, and a house on the lot at (3, -1). */
-  function street(driven: number, builtAt = at(9)) {
+  function street(driven: number, builtAt = at(9), kind?: Kind) {
     const sim = new CitySim(cfg);
     for (let x = 0; x <= 6; x++) sim.road.set(cellKey(x, 0), driven);
     sim.lots.set(cellKey(3, -1), builtAt);
+    if (kind) sim.kinds.set(cellKey(3, -1), kind);
     return sim;
   }
   const layout = (sim: CitySim, t: number) =>
@@ -214,7 +249,11 @@ describe("layoutCells looks", () => {
       3,
       0,
       5,
-      { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: (x, y) => sim.lots.get(cellKey(x, y)) ?? 0 },
+      {
+        driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0,
+        built: (x, y) => sim.lots.get(cellKey(x, y)) ?? 0,
+        kind: (x, y) => sim.lotKind(x, y),
+      },
     );
   const roads = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model.startsWith("roads/road"));
   const lights = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model === "roads/light-square");
@@ -244,7 +283,7 @@ describe("layoutCells looks", () => {
   it("stands it on the east edge of a north-south street, turned with the piece", () => {
     const sim = new CitySim(cfg);
     for (let y = 0; y <= 6; y++) sim.road.set(cellKey(0, y), 3);
-    const placed = layoutCells((x, y) => sim.hasRoad(x, y), () => 0, 0, 3, 5, { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: () => 0 });
+    const placed = layoutCells((x, y) => sim.hasRoad(x, y), () => 0, 0, 3, 5, { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: () => 0, kind: () => undefined });
     const ls = lights(placed);
     expect(ls.map((p) => Math.floor(p.y))).toEqual([2, 4]);
     for (const p of ls) {
@@ -259,7 +298,7 @@ describe("layoutCells looks", () => {
     // a plus of road, every cell driven 3 times: crossroad in the middle, an end on each arm
     for (const [x, y] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) sim.road.set(cellKey(x, y), 3);
     sim.road.set(cellKey(5, 5), 3); // a lone square far away
-    const placed = layoutCells((x, y) => sim.hasRoad(x, y), () => 0, 2, 2, 5, { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: () => 0 });
+    const placed = layoutCells((x, y) => sim.hasRoad(x, y), () => 0, 2, 2, 5, { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: () => 0, kind: () => undefined });
     expect(lights(placed)).toHaveLength(0);
   });
 
@@ -271,11 +310,13 @@ describe("layoutCells looks", () => {
     expect(house(at(2)).colour).toBe(ROOF_COLOURS[3]);
   });
 
-  it("leaves a commercial building white whatever the hour", () => {
+  it("keeps the hour's roof colour on a tier 3 house, which is a suburban one now", () => {
     const sim = street(2, at(21));
     const old = at(21) + 4 * 3_600_000; // old enough to be tier 3
     expect(sim.houseTier(3, -1, old)).toBe(3);
-    expect(layout(sim, old).find((p) => p.x === 3 && p.y === -1)!.colour).toBe(WHITE);
+    const house = layout(sim, old).find((p) => p.x === 3 && p.y === -1)!;
+    expect(HOUSE_POOLS[2]).toContain(house.model);
+    expect(house.colour).toBe(ROOF_COLOURS[2]);
   });
 
   describe("layoutKey", () => {
@@ -299,10 +340,15 @@ describe("layoutCells looks", () => {
       expect(key(3)).toBe(key(40));
     });
 
-    it("does not notice a roof band on a commercial building", () => {
-      // 4 h old and beside a busy road, the house is tier 3, so the band it was built in does not show
+    it("notices a roof band on a tier 3 house, which keeps its hour colour", () => {
       const tier3 = (builtAt: number) => layoutKey(layout(street(2, builtAt), builtAt + 4 * 3_600_000));
-      expect(tier3(at(19))).toBe(tier3(at(23)));
+      expect(tier3(at(19))).toBe(tier3(at(23))); // both evening
+      expect(tier3(at(13))).not.toBe(tier3(at(19)));
+    });
+
+    it("does not notice a roof band on a commercial building", () => {
+      const shop = (builtAt: number) => layoutKey(layout(street(2, builtAt, "shop"), builtAt + 1000));
+      expect(shop(at(7))).toBe(shop(at(13)));
     });
 
     it("changes with a streetlight placement alone", () => {
@@ -321,6 +367,227 @@ describe("layoutCells looks", () => {
       const placed = layout(street(2), at(9, 1));
       const recoloured = placed.map((p, i) => (i === 0 ? { ...p, colour: 0x123456 } : p));
       expect(layoutKey(recoloured)).not.toBe(layoutKey(placed));
+    });
+  });
+});
+
+describe("building kinds", () => {
+  const built = new Date(2026, 10, 3, 14, 0).getTime(); // afternoon
+  const noon = ROOF_COLOURS[roofBand(built)];
+  /** What kind `kind` puts on the cell (3, -1) beside a road along y = 0, at a tier, through layoutCells. */
+  const lot = (kind: Kind | undefined, tier: 1 | 2 | 3, x = 3, y = -1): Placement[] =>
+    layoutCells(
+      (cx, cy) => cy === y + 1 && cx >= x - 3 && cx <= x + 3,
+      (cx, cy) => (cx === x && cy === y ? tier : 0),
+      x,
+      y,
+      4,
+      { driven: () => 1, built: () => built, kind: () => kind },
+    ).filter((p) => !p.model.startsWith("roads/"));
+  const inside = (p: Placement, x = 3, y = -1) => Math.abs(p.x - x) <= 0.5 && Math.abs(p.y - y) <= 0.5;
+  const TIERS = [1, 2, 3] as const;
+  const KINDS: Kind[] = ["house", "row", "detached", "park", "shop", "apartment", "landmark"];
+  const family = (m: string) => m.split("/")[0];
+
+  it("draws a house, row house and detached house from the tier's suburban pool, with the hour's roof", () => {
+    for (const kind of ["house", "row", "detached"] as const) {
+      for (const tier of TIERS) {
+        const [house] = lot(kind, tier);
+        expect(HOUSE_POOLS[tier - 1], `${kind} tier ${tier}`).toContain(house.model);
+        expect(house.colour).toBe(noon);
+        expect(house.turns).toBe(2); // road to the south
+      }
+    }
+  });
+
+  it("draws a lot with no kind as a house", () => {
+    for (const tier of TIERS) expect(lot(undefined, tier)).toEqual(lot("house", tier));
+  });
+
+  it("draws a plain house at the size it always was", () => {
+    for (const tier of TIERS) expect(lot("house", tier)[0].scale).toBe(HOUSE_SCALE[tier - 1]);
+  });
+
+  it("draws a row house bigger than a house, so that neighbours meet, and a detached one smaller, in its garden", () => {
+    for (const tier of TIERS) {
+      expect(lot("row", tier)[0].scale).toBeGreaterThan(lot("house", tier)[0].scale);
+      expect(lot("detached", tier)[0].scale).toBeLessThan(lot("house", tier)[0].scale);
+    }
+  });
+
+  it("gives a detached house a garden: small trees inside its own cell, as well as the house", () => {
+    for (const tier of TIERS) {
+      const [house, ...garden] = lot("detached", tier);
+      expect(HOUSE_POOLS[tier - 1]).toContain(house.model);
+      expect(garden.length).toBeGreaterThan(0);
+      for (const g of garden) {
+        expect(g.model).toBe(GARDEN_TREE);
+        expect(inside(g)).toBe(true);
+        expect(g.colour).toBe(WHITE);
+      }
+    }
+    expect(lot("house", 1)).toHaveLength(1);
+    expect(lot("row", 1)).toHaveLength(1);
+  });
+
+  it("draws a shop from the commercial a to e models, in its own colours, whatever the tier", () => {
+    const first = lot("shop", 1);
+    for (const tier of TIERS) {
+      const placed = lot("shop", tier);
+      expect(placed).toHaveLength(1);
+      expect(SHOP_POOL).toContain(placed[0].model);
+      expect(placed[0].colour).toBe(WHITE);
+      expect(placed).toEqual(first);
+    }
+    expect(SHOP_POOL).toEqual("abcde".split("").map((c) => `commercial/building-${c}`));
+  });
+
+  it("draws every shop and block no wider than its lot, and no bigger than the standard commercial size", () => {
+    for (const model of [...SHOP_POOL, ...BLOCK_POOL]) {
+      expect(COMMERCIAL_FOOTPRINT, model).toHaveProperty([model]);
+      const scale = commercialScale(model);
+      expect(scale, model).toBeLessThanOrEqual(COMMERCIAL_SCALE);
+      expect(scale * COMMERCIAL_FOOTPRINT[model], model).toBeLessThanOrEqual(1 + 1e-9);
+      expect(scale, model).toBeGreaterThan(0.4);
+    }
+    // narrow models keep the standard size, the widest are shrunk to fit
+    expect(commercialScale("commercial/building-a")).toBe(COMMERCIAL_SCALE);
+    expect(commercialScale("commercial/building-n")).toBeLessThan(0.5);
+  });
+
+  it("draws the shop and the tier 3 apartment at the size that fits their model", () => {
+    for (let x = 0; x < 40; x++) {
+      const shop = lot("shop", 1, x, -1)[0];
+      expect(shop.scale).toBe(commercialScale(shop.model));
+      const block = lot("apartment", 3, x, -1)[0];
+      expect(block.scale).toBe(commercialScale(block.model));
+    }
+  });
+
+  it("draws an apartment as a house at tiers 1 and 2, and as a commercial block of f to n at tier 3", () => {
+    for (const tier of [1, 2] as const) expect(lot("apartment", tier)).toEqual(lot("house", tier));
+    const [block] = lot("apartment", 3);
+    expect(BLOCK_POOL).toContain(block.model);
+    expect(block.colour).toBe(WHITE);
+    expect(BLOCK_POOL).toEqual("fghijklmn".split("").map((c) => `commercial/building-${c}`));
+  });
+
+  it("draws the landmark as the skyscraper, in its own colours, whatever the tier", () => {
+    for (const tier of TIERS) {
+      const placed = lot("landmark", tier);
+      expect(placed).toHaveLength(1);
+      expect(placed[0]).toMatchObject({ model: LANDMARK, colour: WHITE, turns: 2 });
+    }
+  });
+
+  it("draws a park as a large tree and planters on its cell, the same at every tier", () => {
+    const first = lot("park", 1);
+    expect(first.filter((p) => p.model === PARK_TREE).length).toBeGreaterThan(0);
+    expect(first.filter((p) => p.model === PARK_PLANTER).length).toBeGreaterThan(0);
+    for (const p of first) {
+      expect([PARK_TREE, PARK_PLANTER]).toContain(p.model);
+      expect(inside(p)).toBe(true);
+    }
+    for (const tier of TIERS) expect(lot("park", tier)).toEqual(first);
+  });
+
+  it("sets the planters of a park on the road side, whichever side that is", () => {
+    // (dx, dy) of the road side, and the turns that face it
+    const sides: [number, number, Turns][] = [
+      [0, 1, 2],
+      [1, 0, 3],
+      [0, -1, 0],
+      [-1, 0, 1],
+    ];
+    for (const [dx, dy, turns] of sides) {
+      const placed = layoutCells(
+        (cx, cy) => cx === 10 + dx && cy === 10 + dy,
+        (cx, cy) => (cx === 10 && cy === 10 ? 1 : 0),
+        10,
+        10,
+        3,
+        { driven: () => 1, built: () => built, kind: () => "park" },
+      ).filter((p) => !p.model.startsWith("roads/"));
+      const planters = placed.filter((p) => p.model === PARK_PLANTER);
+      const trees = placed.filter((p) => p.model === PARK_TREE);
+      const across = (p: Placement) => (p.x - 10) * dx + (p.y - 10) * dy; // how far towards the road
+      expect(planters.every((p) => across(p) > 0), `planters, road at ${dx},${dy}`).toBe(true);
+      expect(Math.min(...trees.map(across)), `trees, road at ${dx},${dy}`).toBeLessThan(Math.min(...planters.map(across)));
+      expect(houseTurns((cx, cy) => cx === 10 + dx && cy === 10 + dy, 10, 10)).toBe(turns);
+    }
+  });
+
+  it("puts nothing down before the lot's house has appeared", () => {
+    for (const kind of KINDS) expect(lot(kind, 0 as unknown as 1)).toEqual([]);
+  });
+
+  it("draws only models the city loads, and every colour as a whole 24-bit number", () => {
+    for (const kind of KINDS) {
+      for (const tier of TIERS) {
+        for (const [x, y] of [[3, -1], [-7, 12], [100, -50]]) {
+          for (const p of lot(kind, tier, x, y)) {
+            expect(MODEL_NAMES, `${kind} ${tier} ${p.model}`).toContain(p.model);
+            expect(Number.isInteger(p.colour) && p.colour >= 0 && p.colour <= 0xffffff).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it("uses commercial models only for shops, tier 3 apartments and the landmark", () => {
+    for (const kind of KINDS) {
+      for (const tier of TIERS) {
+        const commercial = lot(kind, tier).some((p) => family(p.model) === "commercial");
+        const should = kind === "shop" || kind === "landmark" || (kind === "apartment" && tier === 3);
+        expect(commercial, `${kind} ${tier}`).toBe(should);
+      }
+    }
+  });
+
+  it("is the same through buildingPlacements as through layoutCells", () => {
+    expect(buildingPlacements("park", 2, 3, -1, 2, built)).toEqual(lot("park", 2));
+    expect(buildingPlacements("shop", 1, 3, -1, 2, built)).toEqual(lot("shop", 1));
+  });
+
+  describe("layoutKey", () => {
+    const key = (kind: Kind, tier: 1 | 2 | 3 = 1) => layoutKey(lot(kind, tier));
+
+    it("tells every kind apart on the same cell", () => {
+      const keys = KINDS.map((k) => key(k, 3));
+      // an apartment is a block at tier 3 and the house is not: all seven differ there
+      expect(new Set(keys).size).toBe(KINDS.length);
+      expect(new Set(KINDS.map((k) => key(k, 1))).size).toBe(KINDS.length - 1); // apartment = house at tier 1
+    });
+
+    it("does not change with the tier for kinds that do not grow", () => {
+      for (const kind of ["park", "shop", "landmark"] as const) expect(new Set(TIERS.map((t) => key(kind, t))).size, kind).toBe(1);
+    });
+
+    it("notices an extra placement alone: a park tree or a garden tree moving, appearing or going", () => {
+      for (const kind of ["park", "detached"] as const) {
+        const placed = lot(kind, 1);
+        const last = placed.length - 1;
+        expect(layoutKey(placed.slice(0, last)), `${kind} one fewer`).not.toBe(layoutKey(placed));
+        expect(layoutKey(placed.map((p, i) => (i === last ? { ...p, x: p.x + 0.1 } : p))), `${kind} moved`).not.toBe(layoutKey(placed));
+        expect(layoutKey(placed.map((p, i) => (i === last ? { ...p, scale: p.scale * 1.2 } : p))), `${kind} scaled`).not.toBe(layoutKey(placed));
+      }
+    });
+
+    it("covers every attribute a placement has", () => {
+      const base: Placement = { model: "roads/road-end", x: 1, y: 2, turns: 0, scale: 1, colour: WHITE };
+      // if a field is added to Placement it must be added to layoutKey, and to this list
+      expect(Object.keys(lot("house", 1)[0]).sort()).toEqual(Object.keys(base).sort());
+      const k0 = layoutKey([base]);
+      const changes: Partial<Placement>[] = [
+        { model: "roads/road-square" },
+        { x: 1.25 },
+        { y: 2.25 },
+        { turns: 1 },
+        { scale: 0.8 },
+        { colour: 0x123456 },
+      ];
+      expect(changes).toHaveLength(Object.keys(base).length);
+      for (const change of changes) expect(layoutKey([{ ...base, ...change }]), JSON.stringify(change)).not.toBe(k0);
     });
   });
 });

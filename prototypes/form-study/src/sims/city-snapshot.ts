@@ -1,5 +1,6 @@
 import { CITY_RULES_VERSION } from "../config";
 import type { Dir } from "./city";
+import { isKind, type Kind } from "./kinds";
 
 /**
  * The city's state as plain JSON, taken between strokes. A stroke cut by a
@@ -10,6 +11,10 @@ export interface CitySnapshot {
   rules: number;
   road: [string, number][];
   lots: [string, number][];
+  /** The kind of building on each lot, fixed when the lot was made. */
+  kinds: [string, Kind][];
+  /** Whether the one landmark has been placed. */
+  landmark: boolean;
   roller: { x: number; y: number; dir: Dir; progress: number };
   driven: number;
   distance: number;
@@ -27,6 +32,14 @@ const isNumberOrNull = (v: unknown): v is number | null => v === null || isNumbe
 const isCellEntries = (v: unknown): v is [string, number][] =>
   Array.isArray(v) && v.every((e) => Array.isArray(e) && e.length === 2 && typeof e[0] === "string" && isNumber(e[1]));
 
+/** Kinds for exactly the lots there are: a kind that is not a real one, or a lot without a kind, is a broken snapshot. */
+function isKindEntries(v: unknown, lots: [string, number][]): v is [string, Kind][] {
+  if (!Array.isArray(v)) return false;
+  if (!v.every((e) => Array.isArray(e) && e.length === 2 && typeof e[0] === "string" && isKind(e[1]))) return false;
+  const keys = new Set<string>(v.map((e) => e[0]));
+  return keys.size === lots.length && lots.every(([k]) => keys.has(k));
+}
+
 export function isSnapshot(s: unknown): s is CitySnapshot {
   if (typeof s !== "object" || s === null) return false;
   const v = s as Record<string, unknown>;
@@ -35,6 +48,8 @@ export function isSnapshot(s: unknown): s is CitySnapshot {
     v.rules === CITY_RULES_VERSION &&
     isCellEntries(v.road) &&
     isCellEntries(v.lots) &&
+    isKindEntries(v.kinds, v.lots) &&
+    typeof v.landmark === "boolean" &&
     typeof r === "object" &&
     r !== null &&
     isNumber(r.x) &&

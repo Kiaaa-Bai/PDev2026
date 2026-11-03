@@ -156,8 +156,9 @@ export class CityView3D {
   }
 
   /**
-   * Suburban houses swap their roof green for the colour of each instance, and light their windows at
-   * night; commercial buildings only light their windows. Every other model is left as it is.
+   * Suburban models swap their roof green for the colour of each instance (houses use it; trees and planters
+   * have no roof green, so it does nothing to them) and light their windows at night; commercial buildings
+   * only light their windows. Every other model is left as it is.
    */
   private patchMaterials(): void {
     const of = (prefix: string) => [...this.models].filter(([name]) => name.startsWith(prefix)).map(([, m]) => m);
@@ -263,6 +264,7 @@ export class CityView3D {
     const looks: Looks = {
       driven: (x, y) => this.sim.road.get(cellKey(x, y)) ?? 0,
       built: (x, y) => this.sim.lots.get(cellKey(x, y)) ?? 0,
+      kind: (x, y) => this.sim.lotKind(x, y),
     };
     const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), VIEW_RADIUS, looks);
     const key = layoutKey(placed);

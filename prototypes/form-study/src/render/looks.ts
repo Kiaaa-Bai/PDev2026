@@ -23,8 +23,8 @@ export const LANE_TINT = 0xc9b48a;
 
 export const roadColour = (tier: 1 | 2 | 3): number => (tier === 1 ? LANE_TINT : WHITE);
 
-/** Suburban roofs (tiers 1 and 2) take the colour of the hour they were built; commercial buildings (tier 3) keep their own. */
-export const roofColour = (houseTier: 1 | 2 | 3, built: number): number => (houseTier < 3 ? ROOF_COLOURS[roofBand(built)] : WHITE);
+/** A suburban roof takes the colour of the hour its house was built; commercial buildings keep their own, so they are placed white. */
+export const roofColour = (built: number): number => ROOF_COLOURS[roofBand(built)];
 
 /** The warm light of a lit window. */
 export const WINDOW_LIT = 0xffd27a;

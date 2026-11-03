@@ -2,6 +2,7 @@ import { CITY_RULES_VERSION } from "../config";
 import type { Point } from "../data";
 import { Rng } from "../rng";
 import { isSnapshot, type CitySnapshot } from "./city-snapshot";
+import { isUnlocked, kindFor, neighboursAt, type Kind } from "./kinds";
 import { headingFor } from "./steer";
 import type { Sim } from "./types";
 
@@ -52,6 +53,10 @@ export class CitySim implements Sim {
   readonly road = new Map<string, number>();
   /** Lots beside road, mapped to the time their house appears. */
   readonly lots = new Map<string, number>();
+  /** The kind of building on each lot, fixed when the lot was made and never changed after. */
+  readonly kinds = new Map<string, Kind>();
+  /** True once the one landmark has been placed, even if the roller has flattened it since. */
+  landmarkPlaced = false;
   readonly roller = { x: 0, y: 0, dir: 0 as Dir, progress: 0 };
   driven = 0;
   /** Length of the pointer's path in screen points, summed over every stroke. */
@@ -124,6 +129,8 @@ export class CitySim implements Sim {
       rules: CITY_RULES_VERSION,
       road: [...this.road],
       lots: [...this.lots],
+      kinds: [...this.kinds],
+      landmark: this.landmarkPlaced,
       roller: { ...this.roller },
       driven: this.driven,
       distance: this.distance,
@@ -140,6 +147,8 @@ export class CitySim implements Sim {
     const sim = new CitySim(cfg);
     for (const [k, n] of s.road) sim.road.set(k, n);
     for (const [k, t] of s.lots) sim.lots.set(k, t);
+    for (const [k, kind] of s.kinds) sim.kinds.set(k, kind);
+    sim.landmarkPlaced = s.landmark;
     sim.roller.x = s.roller.x;
     sim.roller.y = s.roller.y;
     sim.roller.dir = s.roller.dir;
@@ -171,6 +180,11 @@ export class CitySim implements Sim {
 
   hasRoad(x: number, y: number): boolean {
     return this.road.has(cellKey(x, y));
+  }
+
+  /** The kind of building on the lot at (x, y), or undefined where there is no lot. */
+  lotKind(x: number, y: number): Kind | undefined {
+    return this.kinds.get(cellKey(x, y));
   }
 
   /** 0 for no house yet, else the house's tier at time t. */
@@ -241,14 +255,46 @@ export class CitySim implements Sim {
     const k = cellKey(x, y);
     this.road.set(k, (this.road.get(k) ?? 0) + 1);
     this.lots.delete(k);
+    this.kinds.delete(k);
     const [lo, hi] = this.cfg.lotDelayMs;
     for (let d = 0; d < 4; d++) {
-      const nk = cellKey(x + DX[d], y + DY[d]);
+      const lx = x + DX[d];
+      const ly = y + DY[d];
+      const nk = cellKey(lx, ly);
       if (this.road.has(nk) || this.lots.has(nk)) continue;
       if (this.rng.next() >= this.cfg.lotChance) continue;
-      this.lots.set(nk, t + lo + this.rng.next() * (hi - lo));
+      // three draws for every new lot, whatever is unlocked, so what the draws decide never depends on the thresholds
+      const ready = t + lo + this.rng.next() * (hi - lo);
+      const roll = this.rng.next();
+      this.kinds.set(nk, this.kindOfNewLot(lx, ly, roll));
+      this.lots.set(nk, ready);
     }
     this.version++;
+  }
+
+  /**
+   * The kind of the lot about to be made at (x, y), from what is around it and the distance now. Once it
+   * is unlocked, the first lot made beside road that was driven `wideRoadAt` times is the landmark.
+   */
+  private kindOfNewLot(x: number, y: number, roll: number): Kind {
+    if (!this.landmarkPlaced && isUnlocked("landmark", this.distance) && this.besideWideRoad(x, y)) {
+      this.landmarkPlaced = true;
+      return "landmark";
+    }
+    const n = neighboursAt(
+      (cx, cy) => this.road.has(cellKey(cx, cy)),
+      (cx, cy) => this.lots.has(cellKey(cx, cy)),
+      x,
+      y,
+    );
+    return kindFor(n, this.distance, roll);
+  }
+
+  private besideWideRoad(x: number, y: number): boolean {
+    for (let d = 0; d < 4; d++) {
+      if ((this.road.get(cellKey(x + DX[d], y + DY[d])) ?? 0) >= this.cfg.wideRoadAt) return true;
+    }
+    return false;
   }
 
   private besideBusyRoad(x: number, y: number): boolean {

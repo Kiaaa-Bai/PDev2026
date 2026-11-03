@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CITY_RULES_VERSION } from "../src/config";
-import { CitySim, roadMaskAt, type CityConfig } from "../src/sims/city";
+import { CitySim, cellKey, roadMaskAt, type CityConfig } from "../src/sims/city";
+import { kindFor, neighboursAt, UNLOCKS, type Kind } from "../src/sims/kinds";
 
 const cfg: CityConfig = {
   speed: 1,
@@ -138,6 +139,7 @@ describe("CitySim roller", () => {
   const sameCityAnyFrameRate = (over: Partial<CityConfig>) => {
     const run = (step: number) => {
       const sim = new CitySim({ ...cfg, lotChance: 0.5, lotDelayMs: [20_000, 120_000], seed: 9, ...over });
+      sim.distance = 3_000_000; // every kind unlocked
       const turns: [number, readonly [number, number]][] = [
         [1000, [0, 0]],
         [3200, PUSH.S],
@@ -151,9 +153,15 @@ describe("CitySim roller", () => {
       }
       for (; t < 20_000; t += step) sim.advanceTo(t);
       sim.advanceTo(20_000);
-      return { roads: roads(sim), lots: [...sim.lots.entries()].sort() };
+      return { roads: roads(sim), lots: [...sim.lots.entries()].sort(), kinds: [...sim.kinds.entries()].sort() };
     };
-    expect(run(16)).toEqual(run(5000));
+    const a = run(16);
+    const b = run(5000);
+    expect(a.roads).toEqual(b.roads);
+    expect(a.kinds).toEqual(b.kinds);
+    // the lots are the same cells; their times may differ in the last bit, since the roller's position is summed in different steps
+    expect(a.lots.map(([k]) => k)).toEqual(b.lots.map(([k]) => k));
+    a.lots.forEach(([k, ready], i) => expect(ready, k).toBeCloseTo(b.lots[i][1], 6));
   };
 
   it("grows the same city whatever the frame rate", () => sameCityAnyFrameRate({}));
@@ -255,6 +263,227 @@ describe("CitySim houses", () => {
   });
 });
 
+describe("CitySim kinds", () => {
+  const unlockAt = (kind: Kind) => UNLOCKS.find((u) => u.kind === kind)!.at;
+  const kinds = (sim: CitySim) => [...sim.kinds.entries()].sort();
+  const kindsAt = (sim: CitySim, ...at: [number, number][]) => at.map(([x, y]) => sim.lotKind(x, y));
+  /** A city with `distance` already driven, whose first touch paves (0, 0) beside the road and lots given. */
+  function startWith(distance: number, road: [number, number, number?][] = [], lots: [number, number][] = []) {
+    const sim = new CitySim(cfg);
+    sim.distance = distance;
+    for (const [x, y, n = 1] of road) sim.road.set(cellKey(x, y), n);
+    for (const [x, y] of lots) sim.lots.set(cellKey(x, y), 0);
+    swipe(sim, 1000);
+    return sim;
+  }
+  /** Drives a winding path of re-driven streets, so lots come up beside corners, rows, and wide road. */
+  function wander(sim: CitySim, pushes = 160) {
+    // the strokes add distance; hold it where it started, so what is unlocked stays as the test set it
+    const held = sim.distance;
+    const headings = [PUSH.E, PUSH.E, PUSH.S, PUSH.W, PUSH.W, PUSH.N, PUSH.E, PUSH.S, PUSH.S, PUSH.W, PUSH.N, PUSH.N];
+    let t = 1000;
+    for (let i = 0; i < pushes; i++) {
+      t += 2500 + (i % 3) * 2000;
+      swipe(sim, t, ...headings[(i * 5) % headings.length]);
+      sim.distance = held;
+    }
+    sim.advanceTo(t + 60_000);
+  }
+  const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
+
+  it("bumps the rules version, since kinds change what a city grows", () => {
+    expect(CITY_RULES_VERSION).toBe(3);
+  });
+
+  it("gives every lot a kind, stored apart from the time its house appears", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000);
+    sim.advanceTo(3500);
+    expect(sim.lots.size).toBeGreaterThan(4);
+    for (const [k, ready] of sim.lots) {
+      expect(typeof ready).toBe("number");
+      expect(sim.kinds.has(k), k).toBe(true);
+    }
+    expect(sim.kinds.size).toBe(sim.lots.size);
+    expect(sim.lotKind(0, -1)).toBe(sim.kinds.get("0,-1"));
+    expect(sim.lotKind(50, 50)).toBeUndefined();
+    expect(sim.lotKind(0, 0)).toBeUndefined(); // a road, not a lot
+  });
+
+  it("starts out with detached houses at the head of a road and houses behind them", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000);
+    sim.advanceTo(3500);
+    // the first lot on each side has nothing beside it, the next ones have the lot behind
+    expect(kindsAt(sim, [0, -1], [0, 1])).toEqual(["detached", "detached"]);
+    expect(kindsAt(sim, [1, -1], [2, -1], [1, 1], [2, 1])).toEqual(["house", "house", "house", "house"]);
+  });
+
+  it("makes a lot between two lots along its road a row", () => {
+    const sim = startWith(0, [], [[-1, -1], [1, -1]]);
+    expect(sim.lotKind(0, -1)).toBe("row");
+  });
+
+  it("makes a lot beside road on two sides a shop once shops are unlocked, and a house before", () => {
+    // a road already at (1, 1): the lots at (1, 0) and (0, 1) touch it and the new road at (0, 0)
+    const before = startWith(unlockAt("shop") - 1, [[1, 1]]);
+    expect(kindsAt(before, [1, 0], [0, 1])).toEqual(["house", "house"]);
+    const after = startWith(unlockAt("shop"), [[1, 1]]);
+    expect(kindsAt(after, [1, 0], [0, 1])).toEqual(["shop", "shop"]);
+  });
+
+  it("does not count a road beside the lot as a lot", () => {
+    const sim = startWith(0, [[1, 1]]);
+    // (1, 0) has road to the west and south: a corner, and no lots along its street (they would be north and south)
+    const n = neighboursAt((x, y) => sim.hasRoad(x, y), (x, y) => sim.lots.has(cellKey(x, y)), 1, 0);
+    expect(n).toMatchObject({ roadSides: 2, cornerRoads: true });
+  });
+
+  it("makes parks from a share of the plain houses once parks are unlocked, and none before", () => {
+    const run = (distance: number) => {
+      const sim = new CitySim({ ...cfg, idleStopMs: 400_000, slowMs: 10_000 });
+      sim.distance = distance;
+      swipe(sim, 0);
+      sim.advanceTo(300_000);
+      return [...sim.kinds.values()];
+    };
+    const before = run(unlockAt("park") - 1);
+    expect(before.length).toBeGreaterThan(300);
+    expect(before).not.toContain("park");
+    const after = run(unlockAt("park"));
+    const share = after.filter((k) => k === "park").length / after.filter((k) => k === "park" || k === "house").length;
+    expect(share).toBeGreaterThan(0.08);
+    expect(share).toBeLessThan(0.25);
+  });
+
+  it("gives out nothing before its distance", () => {
+    for (const { kind, at } of UNLOCKS) {
+      const sim = new CitySim(wild);
+      sim.distance = at - 1;
+      wander(sim);
+      expect([...sim.kinds.values()], kind).not.toContain(kind);
+      expect(sim.landmarkPlaced).toBe(false);
+    }
+  });
+
+  it("makes the same roads and lots whatever the distance: only the kinds depend on it", () => {
+    const run = (distance: number) => {
+      const sim = new CitySim(wild);
+      sim.distance = distance;
+      wander(sim);
+      return sim;
+    };
+    const none = run(0);
+    const all = run(unlockAt("landmark"));
+    expect([...all.road]).toEqual([...none.road]);
+    expect([...all.lots]).toEqual([...none.lots]);
+    expect(all.lots.size).toBeGreaterThan(100);
+    expect(kinds(all)).not.toEqual(kinds(none));
+  });
+
+  it("gives out every kind once all are unlocked", () => {
+    const sim = new CitySim(wild);
+    sim.distance = unlockAt("landmark");
+    wander(sim);
+    expect([...new Set(sim.kinds.values())].sort()).toEqual(["apartment", "detached", "landmark", "park", "row", "shop"]);
+  });
+
+  it("keeps a lot's kind when neighbours arrive later", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000); // east, lots all along both sides
+    sim.advanceTo(3500);
+    swipe(sim, 3500, ...PUSH.W); // and back west past the start, so (-1, -1) gets its lot
+    sim.advanceTo(8000);
+    expect(sim.road.has("-1,0")).toBe(true);
+    expect(sim.lots.has("-1,-1")).toBe(true);
+    // (0, -1) now has a lot on each side along its street, which would make it a row ...
+    const now = neighboursAt((x, y) => sim.hasRoad(x, y), (x, y) => sim.lots.has(cellKey(x, y)), 0, -1);
+    expect(now.lotsAlongRoad).toBe(2);
+    expect(kindFor(now, 0, 0.9)).toBe("row");
+    // ... but it was made detached, and stays so
+    expect(sim.lotKind(0, -1)).toBe("detached");
+  });
+
+  it("keeps every lot's kind when more distance unlocks new kinds", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000);
+    sim.advanceTo(3500);
+    const before = kinds(sim);
+    expect(new Set(before.map(([, kind]) => kind))).toEqual(new Set(["detached", "house"]));
+    sim.distance = unlockAt("landmark");
+    swipe(sim, 3500, ...PUSH.S);
+    sim.advanceTo(9000);
+    const kept = before.filter(([k]) => sim.lots.has(k)); // the roller flattens the lots in its way
+    expect(kept.length).toBeGreaterThan(4);
+    for (const [k, kind] of kept) expect(sim.kinds.get(k), k).toBe(kind);
+    expect(new Set(sim.kinds.values()).size).toBeGreaterThan(2); // and the new lots take the new kinds
+  });
+
+  it("forgets a lot's kind when the roller paves over it", () => {
+    const sim = new CitySim(cfg);
+    swipe(sim, 1000, ...PUSH.S);
+    sim.advanceTo(2500);
+    expect(sim.road.has("0,1")).toBe(true);
+    expect(sim.lotKind(0, 1)).toBeUndefined();
+    expect(sim.kinds.size).toBe(sim.lots.size);
+  });
+
+  describe("the landmark", () => {
+    it("is the first new lot beside road driven three times, once it is unlocked", () => {
+      // road at (1, 1) already driven three times: the new lots at (1, 0) and (0, 1) both touch it
+      const sim = startWith(unlockAt("landmark"), [[1, 1, 3]]);
+      expect(sim.lotKind(1, 0)).toBe("landmark"); // made first, in the order east, south, west, north
+      expect(sim.landmarkPlaced).toBe(true);
+      expect(sim.lotKind(0, 1)).toBe("shop"); // a corner lot, and the landmark is taken
+    });
+
+    it("is not placed before it is unlocked, nor beside road driven only twice", () => {
+      const early = startWith(unlockAt("landmark") - 1, [[1, 1, 3]]);
+      expect([...early.kinds.values()]).not.toContain("landmark");
+      expect(early.landmarkPlaced).toBe(false);
+      const twice = startWith(unlockAt("landmark"), [[1, 1, 2]]);
+      expect([...twice.kinds.values()]).not.toContain("landmark");
+      expect(twice.landmarkPlaced).toBe(false);
+    });
+
+    it("is the only one: a later lot beside wide road is an ordinary one", () => {
+      // two stretches of wide road: the first lot beside either becomes the landmark, the second does not
+      const sim = startWith(unlockAt("landmark"), [[1, 1, 3], [1, -2, 3]]);
+      swipe(sim, 1000, ...PUSH.N); // away from the first, towards the second: (1, -1) touches it
+      sim.advanceTo(4000);
+      expect(sim.lotKind(1, 0)).toBe("landmark");
+      expect(sim.lotKind(1, -1)).toBeDefined();
+      expect(sim.lotKind(1, -1)).not.toBe("landmark");
+      expect([...sim.kinds.values()].filter((k) => k === "landmark")).toHaveLength(1);
+    });
+
+    it("stays the only one when the roller flattens it: the flag is not given back", () => {
+      const sim = startWith(unlockAt("landmark"), [[1, 1, 3]]);
+      expect(sim.lotKind(1, 0)).toBe("landmark");
+      sim.advanceTo(5000); // east over (1, 0), and on: the lot at (2, 1) touches the wide road too
+      expect(sim.road.has("1,0")).toBe(true);
+      expect(sim.lotKind(1, 0)).toBeUndefined();
+      expect(sim.lotKind(2, 1)).toBeDefined();
+      expect([...sim.kinds.values()]).not.toContain("landmark");
+      expect(sim.landmarkPlaced).toBe(true);
+    });
+
+    it("leaves lots made before the unlock as they were", () => {
+      const sim = new CitySim(cfg);
+      sim.road.set("1,1", 3);
+      swipe(sim, 1000); // lots are made beside the new road, nothing unlocked
+      const before = kinds(sim);
+      expect(before.map(([, k]) => k)).not.toContain("landmark");
+      sim.distance = unlockAt("landmark");
+      swipe(sim, 3000, ...PUSH.S);
+      sim.advanceTo(8000);
+      const kept = before.filter(([k]) => sim.lots.has(k));
+      expect(kept.length).toBeGreaterThan(1);
+      for (const [k, kind] of kept) expect(sim.kinds.get(k), k).toBe(kind);
+    });
+  });
+});
+
 describe("CitySim snapshot", () => {
   /** Forty swipes that turn or just tap, with gaps long enough for the roller to park partway between cells. */
   const script = (() => {
@@ -273,6 +502,8 @@ describe("CitySim snapshot", () => {
   const state = (sim: CitySim) => ({
     road: [...sim.road.entries()].sort(),
     lots: [...sim.lots.entries()].sort(),
+    kinds: [...sim.kinds.entries()].sort(),
+    landmarkPlaced: sim.landmarkPlaced,
     roller: sim.roller,
     driven: sim.driven,
     distance: sim.distance,
@@ -282,11 +513,14 @@ describe("CitySim snapshot", () => {
   const throughJson = (s: unknown) => JSON.parse(JSON.stringify(s));
 
   it("snapshot plus later records equals full replay", () => {
+    // every kind unlocked from the start, so the kinds, the park rolls and the landmark all take part
     const whole = new CitySim(busy);
+    whole.distance = 3_000_000;
     swipes(whole, 0, 40);
     whole.advanceTo(400_000);
 
     const first = new CitySim(busy);
+    first.distance = 3_000_000;
     swipes(first, 0, 20);
     const restored = CitySim.restore(busy, throughJson(first.snapshot()))!;
     expect(restored).not.toBeNull();
@@ -295,6 +529,7 @@ describe("CitySim snapshot", () => {
 
     expect(whole.road.size).toBeGreaterThan(20);
     expect(whole.lots.size).toBeGreaterThan(10);
+    expect(new Set(whole.kinds.values()).size).toBeGreaterThan(3);
     expect(state(restored)).toEqual(state(whole));
   });
 
@@ -331,6 +566,27 @@ describe("CitySim snapshot", () => {
     expect(CitySim.restore(busy, noRules)).toBeNull();
   });
 
+  it("carries the kinds and whether the landmark is placed", () => {
+    const sim = new CitySim({ ...busy, lotChance: 1 });
+    sim.distance = 3_000_000;
+    sim.road.set("1,1", 3); // wide road beside the lot at (1, 0)
+    swipe(sim, 1000);
+    sim.advanceTo(1500); // before the roller drives over that lot
+    expect(sim.lotKind(1, 0)).toBe("landmark");
+    expect(sim.landmarkPlaced).toBe(true);
+    const snap = throughJson(sim.snapshot());
+    expect(snap.kinds.length).toBe(sim.lots.size);
+    expect(snap.landmark).toBe(true);
+    expect(snap.kinds).toContainEqual(["1,0", "landmark"]);
+    const restored = CitySim.restore(busy, snap)!;
+    expect(restored.kinds).toEqual(sim.kinds);
+    expect(restored.landmarkPlaced).toBe(true);
+    expect(restored.lotKind(1, 0)).toBe("landmark");
+    const fresh = throughJson(new CitySim(busy).snapshot());
+    expect(fresh.kinds).toEqual([]);
+    expect(fresh.landmark).toBe(false);
+  });
+
   it("ignores broken snapshot text", () => {
     const sim = new CitySim(busy);
     swipes(sim, 0, 5);
@@ -343,6 +599,16 @@ describe("CitySim snapshot", () => {
     expect(CitySim.restore(busy, { ...snap, started: "yes" })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, rng: "seed" })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, clock: "now" })).toBeNull();
+    // the kinds must be there, be real kinds, and cover every lot
+    const { kinds: _kinds, ...noKinds } = snap;
+    expect(CitySim.restore(busy, noKinds)).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, kinds: "house" })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, kinds: [["0,1", "tower"]] })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, kinds: [["0,1", 3]] })).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, kinds: snap.kinds.slice(1) })).toBeNull();
+    const { landmark: _landmark, ...noLandmark } = snap;
+    expect(CitySim.restore(busy, noLandmark)).toBeNull();
+    expect(CitySim.restore(busy, { ...snap, landmark: 1 })).toBeNull();
     expect(CitySim.restore(busy, snap)).not.toBeNull();
   });
 });

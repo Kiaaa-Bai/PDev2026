@@ -20,6 +20,9 @@ const host = document.querySelector<HTMLElement>("#panels")!;
 /** Dev only: `?hour=22` (or `?hour=19.5`) shows the city at that time of day, whatever else the clock says. */
 const hour = hourParam(location.search);
 
+/** Dev only: `?distance=3000000` starts every city with that much pointer distance, so the kinds it unlocks show at once. */
+const startDistance = Math.max(0, parseFloat(new URLSearchParams(location.search).get("distance") ?? "")) || 0;
+
 async function boot() {
   // The city's own clock while a recording is replayed, so a day recorded in the evening is shown in the evening.
   let replayed: CitySim | null = null;
@@ -31,6 +34,7 @@ async function boot() {
   /** A fresh city on the view: live (the mouse drives it) or file (a recording drives it). */
   function makeWorld(mode: World["mode"]): World {
     const city = new CitySim(CITY);
+    city.distance = startDistance;
     replayed = mode === "file" ? city : null;
     view.setSim(city);
     const sims = [city];

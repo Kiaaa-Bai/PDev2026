@@ -70,10 +70,11 @@ describe("colours", () => {
     expect(roadColour(3)).toBe(WHITE);
   });
 
-  it("colours suburban roofs by the hour they were built, and leaves commercial ones alone", () => {
-    expect(roofColour(1, at(8, 0))).toBe(ROOF_COLOURS[0]);
-    expect(roofColour(2, at(20, 0))).toBe(ROOF_COLOURS[2]);
-    expect(roofColour(3, at(20, 0))).toBe(WHITE);
+  it("colours a roof by the hour its house was built", () => {
+    expect(roofColour(at(8, 0))).toBe(ROOF_COLOURS[0]);
+    expect(roofColour(at(14, 0))).toBe(ROOF_COLOURS[1]);
+    expect(roofColour(at(20, 0))).toBe(ROOF_COLOURS[2]);
+    expect(roofColour(at(3, 0))).toBe(ROOF_COLOURS[3]);
   });
 });
 
