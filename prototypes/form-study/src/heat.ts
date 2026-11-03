@@ -1,5 +1,8 @@
 import { cellOf } from "./grid";
 
+/** The area the pointer can be in, as `[x, y, width, height]` in screen points. */
+export type Bounds = [x: number, y: number, w: number, h: number];
+
 /** Touch points per cell, for the heat map view. */
 export class Heat {
   readonly counts: Uint32Array;
@@ -20,5 +23,10 @@ export class Heat {
     if (this.counts[i] > this.max) this.max = this.counts[i];
     this.total += 1;
     this.version++;
+  }
+
+  /** Adds a point in screen points; one outside the bounds counts in the nearest edge cell. */
+  addPoint(x: number, y: number, b: Bounds): void {
+    this.add((x - b[0]) / b[2], (y - b[1]) / b[3]);
   }
 }

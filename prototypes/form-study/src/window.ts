@@ -2,25 +2,22 @@ import "./window.css";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Application } from "pixi.js";
-import { CITY, FARM, MONSTER } from "./config";
+import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
 import { Feeder } from "./drive";
-import { Heat } from "./heat";
+import { Heat, type Bounds } from "./heat";
 import { CityView } from "./render/city";
-import { FarmView } from "./render/farm";
 import { HeatView } from "./render/heat";
-import { MonsterView } from "./render/monster";
 import { PANEL_H, PANEL_W } from "./render/panel";
 import { CitySim } from "./sims/city";
-import { FarmSim } from "./sims/farm";
-import { MonsterSim } from "./sims/monster";
 import type { Sim } from "./sims/types";
 import { loadTiles } from "./tiles";
 
-const TABS = ["Heat", "City", "Farm", "Monster"];
+const TABS = ["City", "Heat"];
 const TAB_KEY = "trackpad.tab";
-const CITY_TAB = 1;
-/** Keep repainting this long after a change, so the defeat flash can play out. */
+const CITY_TAB = 0;
+const HEAT_TAB = 1;
+/** Keep repainting this long after a change, so a short animation can play out. */
 const SETTLE_MS = 400;
 
 const tabsEl = document.querySelector<HTMLElement>("#tabs")!;
@@ -55,24 +52,25 @@ async function boot() {
   await app.init({ width: PANEL_W, height: PANEL_H, background: "#111111", antialias: false, roundPixels: true, autoStart: false });
   stageEl.append(app.canvas as HTMLCanvasElement);
 
+  // Records are screen points; the heat map wants them in 0–1 over the displays.
+  const [bx, by, bw, bh] = await invoke<number[]>("display_bounds");
+  const bounds: Bounds = [bx, by, bw, bh];
+  const unit = (v: number, from: number, size: number) => Math.min(1, Math.max(0, (v - from) / size));
+
   const heat = new Heat(64, 40);
   const fingers = new Map<number, { x: number; y: number }>();
   const city = new CitySim(CITY);
-  const farm = new FarmSim(FARM);
-  const monster = new MonsterSim(MONSTER);
-  const sims: Sim[] = [city, farm, monster];
-  const views = [new HeatView(heat, fingers), new CityView(city), new FarmView(farm, fingers), new MonsterView(monster, fingers)];
+  const sims: Sim[] = [city];
+  const views = [new CityView(city), new HeatView(heat, fingers)];
   views.forEach((v) => app.stage.addChild(v.root));
   const feeder = new Feeder(() => sims);
-  let touched = 0;
 
   function take(r: TouchRecord) {
-    touched++;
     if (r.state === "up") {
       fingers.delete(r.id);
     } else {
-      fingers.set(r.id, { x: r.x, y: r.y });
-      heat.add(r.x, r.y);
+      fingers.set(r.id, { x: unit(r.x, bx, bw), y: unit(r.y, by, bh) });
+      heat.addPoint(r.x, r.y, bounds);
     }
     feeder.push(r);
   }
@@ -90,10 +88,9 @@ async function boot() {
   const source = await invoke<string>("capture_source");
   const today = parseJsonl(await invoke<string>("today_text"));
   for (const r of today) {
-    if (r.state !== "up") heat.add(r.x, r.y);
+    if (r.state !== "up") heat.addPoint(r.x, r.y, bounds);
     feeder.push(r);
   }
-  monster.poofs.length = 0;
   // Queued touches that already made it into the file were counted above.
   const lastInFile = today.length ? today[today.length - 1].t : -Infinity;
   for (const r of queued.splice(0)) if (r.t > lastInFile) take(r);
@@ -130,10 +127,14 @@ async function boot() {
   function frame() {
     const now = performance.now();
     for (const sim of sims) sim.advanceTo(Date.now());
-    // The roller moves on its own, so the City tab repaints as it crosses each pixel.
+    // Each tab repaints only for changes it shows. The roller moves on its own,
+    // so the City tab repaints as it crosses each pixel.
     const at = city.rollerAt();
-    const cityMotion = active === CITY_TAB ? `${Math.round(at.x * 16)},${Math.round(at.y * 16)},${Math.floor(city.time() / 5000)}` : "";
-    const sig = [heat.version, city.version, farm.version, monster.version, touched, active, cityMotion].join(",");
+    const cityState =
+      active === CITY_TAB ? `${city.version},${Math.round(at.x * 16)},${Math.round(at.y * 16)},${Math.floor(city.time() / 5000)}` : "";
+    // The heat map repaints on each point and when the pointer lifts.
+    const heatState = active === HEAT_TAB ? `${heat.version},${fingers.size}` : "";
+    const sig = [active, cityState, heatState].join(",");
     if (sig !== lastSig || shown !== active) {
       lastSig = sig;
       shown = active;

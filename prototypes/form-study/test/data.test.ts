@@ -17,9 +17,9 @@ describe("parseJsonl", () => {
     ]);
   });
 
-  it("drops unknown states and clamps positions", () => {
-    const text = '{"t":1,"id":1,"x":1.4,"y":-0.2,"state":"down"}\n{"t":2,"id":1,"x":0.5,"y":0.5,"state":"hover"}';
-    expect(parseJsonl(text)).toEqual([{ t: 1, id: 1, x: 1, y: 0, state: "down" }]);
+  it("drops unknown states and keeps positions as recorded", () => {
+    const text = '{"t":1,"id":1,"x":2560.3,"y":-40,"state":"down"}\n{"t":2,"id":1,"x":0.5,"y":0.5,"state":"hover"}';
+    expect(parseJsonl(text)).toEqual([{ t: 1, id: 1, x: 2560.3, y: -40, state: "down" }]);
   });
 
   it("returns nothing for empty or non-touch text", () => {

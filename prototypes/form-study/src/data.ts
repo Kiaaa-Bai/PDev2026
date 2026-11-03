@@ -20,7 +20,6 @@ export interface Stroke {
 }
 
 const STATES = new Set<string>(["down", "move", "up"]);
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 function toRecord(value: unknown): TouchRecord | null {
   if (typeof value !== "object" || value === null) return null;
@@ -29,7 +28,7 @@ function toRecord(value: unknown): TouchRecord | null {
   if (typeof r.x !== "number" || typeof r.y !== "number") return null;
   if (!Number.isFinite(r.x) || !Number.isFinite(r.y)) return null;
   if (typeof r.state !== "string" || !STATES.has(r.state)) return null;
-  return { t: r.t, id: r.id, x: clamp01(r.x), y: clamp01(r.y), state: r.state as TouchState };
+  return { t: r.t, id: r.id, x: r.x, y: r.y, state: r.state as TouchState };
 }
 
 /** One record per line; broken or foreign lines are skipped. Sorted by time. */

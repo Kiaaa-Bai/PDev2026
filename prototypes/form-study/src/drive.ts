@@ -34,19 +34,12 @@ export function inputSims(mode: "live" | "file", sims: Sim[]): Sim[] {
   return mode === "live" ? sims : [];
 }
 
-/** Mouse drags on any target become touch records for finger 0. */
+/** Mouse drags on any target become touch records for finger 0, in page pixels from the target's top-left. */
 export function attachLive(targets: HTMLElement[], onRecord: (r: TouchRecord) => void, now: () => number = Date.now): void {
   let down = false;
   const record = (e: PointerEvent, el: HTMLElement, state: TouchRecord["state"]): TouchRecord => {
     const rect = el.getBoundingClientRect();
-    const clamp = (v: number) => Math.min(1, Math.max(0, v));
-    return {
-      t: now(),
-      id: 0,
-      x: clamp((e.clientX - rect.left) / rect.width),
-      y: clamp((e.clientY - rect.top) / rect.height),
-      state,
-    };
+    return { t: now(), id: 0, x: e.clientX - rect.left, y: e.clientY - rect.top, state };
   };
   for (const el of targets) {
     el.addEventListener("pointerdown", (e) => {

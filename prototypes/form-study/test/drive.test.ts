@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Point, TouchRecord, TouchState } from "../src/data";
-import { Feeder, inputSims } from "../src/drive";
+import { attachLive, Feeder, inputSims } from "../src/drive";
 import type { Sim } from "../src/sims/types";
 
 class Spy implements Sim {
@@ -56,5 +56,20 @@ describe("inputSims", () => {
     const sims = [new Spy()];
     expect(inputSims("live", sims)).toBe(sims);
     expect(inputSims("file", sims)).toEqual([]);
+  });
+});
+
+describe("attachLive", () => {
+  it("live mouse records are page pixels", () => {
+    const handlers = new Map<string, (e: unknown) => void>();
+    const el = {
+      addEventListener: (type: string, fn: (e: unknown) => void) => handlers.set(type, fn),
+      getBoundingClientRect: () => ({ left: 100, top: 20, width: 512, height: 320 }),
+      setPointerCapture: () => {},
+    } as unknown as HTMLElement;
+    const records: TouchRecord[] = [];
+    attachLive([el], (r) => records.push(r), () => 5);
+    handlers.get("pointerdown")!({ clientX: 300, clientY: 120, pointerId: 1 });
+    expect(records).toEqual([{ t: 5, id: 0, x: 200, y: 100, state: "down" }]);
   });
 });
