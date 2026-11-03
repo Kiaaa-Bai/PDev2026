@@ -18,10 +18,16 @@ export function roofBand(t: number): 0 | 1 | 2 | 3 {
 /** Morning, afternoon, evening and night roofs. */
 export const ROOF_COLOURS = [0xe9b44c, 0xe0703a, 0x8e6bbe, 0x3e6fb0] as const;
 
-/** Multiplied into the road texture on roads driven only once, so they read as lanes beside the grey streets. */
-export const LANE_TINT = 0xc9b48a;
+/**
+ * What a road's asphalt is drawn in (the road models' asphalt block is replaced with it: see `patchAsphalt`).
+ * A street is the asphalt as the model has it, a cool blue-grey; a lane, driven only once, is sandy and lighter,
+ * as an unpaved track is, so the first drive reads as a track that driving again paves. (A tint multiplied in could
+ * only have darkened the grey, which read backwards.)
+ */
+export const STREET_COLOUR = 0x666b80;
+export const LANE_COLOUR = 0xd2bb86;
 
-export const roadColour = (tier: 1 | 2 | 3): number => (tier === 1 ? LANE_TINT : WHITE);
+export const roadColour = (tier: 1 | 2 | 3): number => (tier === 1 ? LANE_COLOUR : STREET_COLOUR);
 
 /** A suburban roof takes the colour of the hour its house was built; commercial buildings keep their own, so they are placed white. */
 export const roofColour = (built: number): number => ROOF_COLOURS[roofBand(built)];

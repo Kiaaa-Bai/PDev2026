@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AMBIENT_DAY,
   AMBIENT_NIGHT,
-  LANE_TINT,
+  LANE_COLOUR,
   roadColour,
   roadTier,
   roofBand,
@@ -18,7 +18,7 @@ import {
   SUN_COLOUR_NIGHT,
   SUN_DAY,
   SUN_NIGHT,
-  WHITE,
+  STREET_COLOUR,
 } from "../src/render/looks";
 
 /** A moment on 3 November 2026 by the local clock, which is what a roof's hour means. */
@@ -58,16 +58,24 @@ describe("roofBand", () => {
 });
 
 describe("colours", () => {
-  it("has one distinct roof colour per band, and the lane tint is not white", () => {
+  it("has one distinct roof colour per band", () => {
     expect(ROOF_COLOURS).toHaveLength(4);
     expect(new Set(ROOF_COLOURS).size).toBe(4);
-    expect(LANE_TINT).not.toBe(WHITE);
   });
 
-  it("tints only the narrowest roads", () => {
-    expect(roadColour(1)).toBe(LANE_TINT);
-    expect(roadColour(2)).toBe(WHITE);
-    expect(roadColour(3)).toBe(WHITE);
+  it("gives only the narrowest roads their own asphalt, the others the paved street's", () => {
+    expect(roadColour(1)).toBe(LANE_COLOUR);
+    expect(roadColour(2)).toBe(STREET_COLOUR);
+    expect(roadColour(3)).toBe(STREET_COLOUR);
+  });
+
+  it("makes a lane lighter than the street it becomes, so the first drive reads as the unpaved one", () => {
+    const luma = (c: number) => 0.2126 * ((c >> 16) & 255) + 0.7152 * ((c >> 8) & 255) + 0.0722 * (c & 255);
+    expect(luma(LANE_COLOUR)).toBeGreaterThan(luma(STREET_COLOUR) * 1.5);
+    // and sandy: warm, red above green above blue, where the street is a cool blue-grey
+    const [r, g, b] = [(LANE_COLOUR >> 16) & 255, (LANE_COLOUR >> 8) & 255, LANE_COLOUR & 255];
+    expect(r).toBeGreaterThan(g);
+    expect(g).toBeGreaterThan(b);
   });
 
   it("colours a roof by the hour its house was built", () => {

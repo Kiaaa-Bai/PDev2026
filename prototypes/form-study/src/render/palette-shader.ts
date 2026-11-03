@@ -20,6 +20,12 @@ export const ROOF_BLOCK = { x: 32, y: 128, w: 32, h: 128 } as const;
 /** The pixel in that block that most roof faces read (about 3/4 of the roof area): the roof's base green. */
 export const ROOF_TEXEL = { x: 40, y: 160 } as const;
 
+/**
+ * The road models' asphalt: a flat blue-grey (#666b80) in two neighbouring 32 px blocks of the roads palette, one for
+ * the top of the slab and one for its edge. The kerb and the markings read other blocks.
+ */
+export const ASPHALT_BLOCK = { x: 128, y: 384, w: 64, h: 128 } as const;
+
 /** The window glass's block of the palette (the colormap of suburban and commercial models alike), in pixels. */
 export const WINDOW_BLOCK = { x: 352, y: 128, w: 32, h: 128 } as const;
 
@@ -112,6 +118,39 @@ export function patchPalette(material: THREE.MeshLambertMaterial, roofTexel: THR
       .replace("#include <color_fragment>", "");
   };
   material.customProgramCacheKey = () => "palette-roof-window";
+}
+
+/** What the asphalt block's texel becomes: the instance colour, which is the asphalt's whole colour (the block is flat). */
+const ASPHALT = /* glsl */ `
+#ifdef USE_COLOR
+	if ( all( greaterThanEqual( vMapUv, asphaltBlock.xy ) ) && all( lessThan( vMapUv, asphaltBlock.zw ) ) ) {
+		sampledDiffuseColor.rgb = vColor.rgb;
+	}
+#endif
+`;
+
+/**
+ * Makes a road material draw its asphalt in each instance's colour (`setColorAt`) and everything else, the
+ * kerb and the markings, as it is in the palette: the instance colour is not multiplied into them as it is on
+ * other models. The way `patchPalette` does for a roof.
+ */
+export function patchAsphalt(material: THREE.MeshLambertMaterial): void {
+  if (!MAP.includes(SAMPLE_END)) throw new Error("this Three.js version's map_fragment has changed; palette patch needs updating");
+  const mapFragment = MAP.replace(SAMPLE_END, ASPHALT + SAMPLE_END);
+  const asphaltBlock = new THREE.Vector4(
+    ASPHALT_BLOCK.x / PALETTE_SIZE,
+    ASPHALT_BLOCK.y / PALETTE_SIZE,
+    (ASPHALT_BLOCK.x + ASPHALT_BLOCK.w) / PALETTE_SIZE,
+    (ASPHALT_BLOCK.y + ASPHALT_BLOCK.h) / PALETTE_SIZE,
+  );
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.asphaltBlock = { value: asphaltBlock };
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform vec4 asphaltBlock;")
+      .replace("#include <map_fragment>", mapFragment)
+      .replace("#include <color_fragment>", "");
+  };
+  material.customProgramCacheKey = () => "palette-asphalt";
 }
 
 /**

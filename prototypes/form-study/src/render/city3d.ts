@@ -4,7 +4,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { cellKey, type CitySim } from "../sims/city";
 import { COLORMAPS, colormapRedirect, kitOf, shareOne } from "./colormaps";
 import { AMBIENT_DAY, sameSky, SKY_DAY, skyAt, type SkyState, SUN_COLOUR_DAY, SUN_DAY, WINDOW_LIT } from "./looks";
-import { type NightUniform, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
+import { type NightUniform, patchAsphalt, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
 import {
   clampHalfHeight,
   easeHalfHeight,
@@ -207,7 +207,7 @@ export class CityView3D {
   /**
    * Suburban models swap their roof green for the colour of each instance (houses use it; trees and planters
    * have no roof green, so it does nothing to them) and light their windows at night; commercial buildings
-   * only light their windows. Every other model is left as it is.
+   * only light their windows; roads draw their asphalt in the instance colour. Every other model is left as it is.
    */
   private patchMaterials(): void {
     const of = (prefix: string) => [...this.models].filter(([name]) => name.startsWith(prefix)).map(([, m]) => m);
@@ -217,6 +217,7 @@ export class CityView3D {
     const roofTexel = readTexel(image, ROOF_TEXEL.x, ROOF_TEXEL.y);
     for (const m of suburban) patchPalette(m.mat, roofTexel, this.night);
     for (const m of of("commercial/")) patchWindows(m.mat, this.night);
+    for (const m of of("roads/")) patchAsphalt(m.mat);
   }
 
   /** An instanced mesh of `capacity` glow discs, none placed yet. */

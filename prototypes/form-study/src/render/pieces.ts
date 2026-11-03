@@ -287,7 +287,7 @@ export interface Placement {
   y: number;
   turns: Turns;
   scale: number;
-  /** Instance colour, 0xRRGGBB: multiplied into a road, swapped in for a suburban roof, white for no change. */
+  /** Instance colour, 0xRRGGBB: the asphalt of a road, the roof of a suburban house, white for no change on anything else. */
   colour: number;
 }
 
@@ -303,7 +303,7 @@ export interface Looks {
 
 /**
  * What stands on the cells within `radius` of (cx, cy): road pieces joined to their
- * neighbours (tinted when driven once, with a streetlight on every other straight cell
+ * neighbours (a lane's asphalt when driven once, with a streetlight on every other straight cell
  * when driven three times or more), and buildings of their kind turned to face a road, a house
  * with a roof for the hour it was built. `tierAt` is 0 for no house.
  */

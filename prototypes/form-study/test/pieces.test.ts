@@ -35,7 +35,7 @@ import {
   type Turns,
 } from "../src/render/pieces";
 import { PANEL_H, PANEL_W } from "../src/render/panel";
-import { LANE_TINT, ROOF_COLOURS, roofBand, roofColour, WHITE } from "../src/render/looks";
+import { LANE_COLOUR, ROOF_COLOURS, roofBand, roofColour, STREET_COLOUR, WHITE } from "../src/render/looks";
 import { CitySim, DX, DY, cellKey, type CityConfig } from "../src/sims/city";
 import type { Kind } from "../src/sims/kinds";
 
@@ -266,11 +266,11 @@ describe("layoutCells looks", () => {
   const roads = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model.startsWith("roads/road"));
   const lights = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model === "roads/light-square");
 
-  it("tints a road driven once, and leaves it plain from twice", () => {
+  it("gives a road driven once the lane's asphalt, and from twice the street's", () => {
     const once = roads(layout(street(1), at(9, 1)));
     expect(once).toHaveLength(7);
-    for (const p of once) expect(p.colour).toBe(LANE_TINT);
-    for (const driven of [2, 3, 9]) for (const p of roads(layout(street(driven), at(9, 1)))) expect(p.colour).toBe(WHITE);
+    for (const p of once) expect(p.colour).toBe(LANE_COLOUR);
+    for (const driven of [2, 3, 9]) for (const p of roads(layout(street(driven), at(9, 1)))) expect(p.colour).toBe(STREET_COLOUR);
   });
 
   it("puts a streetlight on every other straight cell of a road driven 3 times, and nowhere else", () => {
