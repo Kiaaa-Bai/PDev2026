@@ -5,12 +5,14 @@ import {
   HOUSE_POOLS,
   layoutCells,
   layoutKey,
+  LIGHT_SCALE,
   MODEL_NAMES,
   ROAD_BASE,
   roadPiece,
   ROLLER,
   rotMask,
 } from "../src/render/pieces";
+import { LANE_TINT, ROOF_COLOURS, WHITE } from "../src/render/looks";
 import { CitySim, DX, DY, cellKey, type CityConfig } from "../src/sims/city";
 
 const baseOf = (model: string) => ROAD_BASE.find(([name]) => name === model)![1];
@@ -149,8 +151,12 @@ describe("layoutCells and layoutKey", () => {
     sim.lots.set(cellKey(1, -1), 0);
     return sim;
   }
+  const looksOf = (sim: CitySim) => ({
+    driven: (x: number, y: number) => sim.road.get(cellKey(x, y)) ?? 0,
+    built: (x: number, y: number) => sim.lots.get(cellKey(x, y)) ?? 0,
+  });
   const layout = (sim: CitySim, t: number) =>
-    layoutCells((x, y) => sim.hasRoad(x, y), (x, y) => sim.houseTier(x, y, t), 1, 0, 3);
+    layoutCells((x, y) => sim.hasRoad(x, y), (x, y) => sim.houseTier(x, y, t), 1, 0, 3, looksOf(sim));
 
   it("places joined road pieces and a house turned to face the road", () => {
     const placed = layout(town(), 1000);
@@ -176,5 +182,143 @@ describe("layoutCells and layoutKey", () => {
     expect(layoutKey(layout(sim, 301_000))).not.toBe(before);
     sim.road.set(cellKey(3, 0), 1);
     expect(layoutKey(layout(sim, 299_000))).not.toBe(before);
+  });
+});
+
+describe("layoutCells looks", () => {
+  const cfg: CityConfig = {
+    speed: 1,
+    steerMin: 40,
+    idleStopMs: 300_000,
+    slowMs: 10_000,
+    lotDelayMs: [20_000, 20_000],
+    lotChance: 1,
+    tierAgesMs: [300_000, 1_200_000],
+    wideRoadAt: 3,
+    seed: 1,
+  };
+  const at = (h: number, m = 0) => new Date(2026, 10, 3, h, m).getTime();
+  /** A straight road along y = 0 from x = 0 to 6, every cell driven `driven` times, and a house on the lot at (3, -1). */
+  function street(driven: number, builtAt = at(9)) {
+    const sim = new CitySim(cfg);
+    for (let x = 0; x <= 6; x++) sim.road.set(cellKey(x, 0), driven);
+    sim.lots.set(cellKey(3, -1), builtAt);
+    return sim;
+  }
+  const layout = (sim: CitySim, t: number) =>
+    layoutCells(
+      (x, y) => sim.hasRoad(x, y),
+      (x, y) => sim.houseTier(x, y, t),
+      3,
+      0,
+      5,
+      { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: (x, y) => sim.lots.get(cellKey(x, y)) ?? 0 },
+    );
+  const roads = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model.startsWith("roads/road"));
+  const lights = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model === "roads/light-square");
+
+  it("tints a road driven once, and leaves it plain from twice", () => {
+    const once = roads(layout(street(1), at(9, 1)));
+    expect(once).toHaveLength(7);
+    for (const p of once) expect(p.colour).toBe(LANE_TINT);
+    for (const driven of [2, 3, 9]) for (const p of roads(layout(street(driven), at(9, 1)))) expect(p.colour).toBe(WHITE);
+  });
+
+  it("puts a streetlight on every other straight cell of a road driven 3 times, and nowhere else", () => {
+    for (const driven of [1, 2]) expect(lights(layout(street(driven), at(9, 1)))).toHaveLength(0);
+    const placed = layout(street(3), at(9, 1));
+    // straights are x = 1..5 (the ends at 0 and 6 are end pieces); alternate cells are where x + y is even
+    expect(lights(placed).map((p) => Math.floor(p.x))).toEqual([2, 4]);
+    for (const p of lights(placed)) expect(p).toMatchObject({ turns: 0, scale: LIGHT_SCALE, colour: WHITE });
+  });
+
+  it("stands the pole on the south edge of an east-west street, its arm reaching over the road", () => {
+    const [light] = lights(layout(street(3), at(9, 1)));
+    expect(light.x).toBe(2);
+    expect(light.y).toBeGreaterThan(0.3);
+    expect(light.y).toBeLessThan(0.5); // inside the cell
+  });
+
+  it("stands it on the east edge of a north-south street, turned with the piece", () => {
+    const sim = new CitySim(cfg);
+    for (let y = 0; y <= 6; y++) sim.road.set(cellKey(0, y), 3);
+    const placed = layoutCells((x, y) => sim.hasRoad(x, y), () => 0, 0, 3, 5, { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: () => 0 });
+    const ls = lights(placed);
+    expect(ls.map((p) => Math.floor(p.y))).toEqual([2, 4]);
+    for (const p of ls) {
+      expect(p.turns).toBe(1);
+      expect(p.x).toBeGreaterThan(0.3);
+      expect(p.x).toBeLessThan(0.5);
+    }
+  });
+
+  it("gives no streetlight to ends, bends, junctions or lone squares", () => {
+    const sim = new CitySim(cfg);
+    // a plus of road, every cell driven 3 times: crossroad in the middle, an end on each arm
+    for (const [x, y] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) sim.road.set(cellKey(x, y), 3);
+    sim.road.set(cellKey(5, 5), 3); // a lone square far away
+    const placed = layoutCells((x, y) => sim.hasRoad(x, y), () => 0, 2, 2, 5, { driven: (x, y) => sim.road.get(cellKey(x, y)) ?? 0, built: () => 0 });
+    expect(lights(placed)).toHaveLength(0);
+  });
+
+  it("colours a suburban roof by the hour its house appeared", () => {
+    const house = (builtAt: number) => layout(street(2, builtAt), builtAt + 1000).find((p) => p.x === 3 && p.y === -1)!;
+    expect(house(at(9)).colour).toBe(ROOF_COLOURS[0]);
+    expect(house(at(13)).colour).toBe(ROOF_COLOURS[1]);
+    expect(house(at(21)).colour).toBe(ROOF_COLOURS[2]);
+    expect(house(at(2)).colour).toBe(ROOF_COLOURS[3]);
+  });
+
+  it("leaves a commercial building white whatever the hour", () => {
+    const sim = street(2, at(21));
+    const old = at(21) + 4 * 3_600_000; // old enough to be tier 3
+    expect(sim.houseTier(3, -1, old)).toBe(3);
+    expect(layout(sim, old).find((p) => p.x === 3 && p.y === -1)!.colour).toBe(WHITE);
+  });
+
+  describe("layoutKey", () => {
+    /** The key a street gives while its house is brand new (tier 1, so the roof shows). */
+    const key = (driven: number, builtAt = at(9)) => layoutKey(layout(street(driven, builtAt), builtAt + 1000));
+
+    it("changes when only a roof band changes", () => {
+      // the same house model, tier and cell, built a minute either side of noon
+      expect(key(2, at(12, 1))).not.toBe(key(2, at(11, 59)));
+    });
+
+    it("stays when a roof's time changes within its band", () => {
+      expect(key(2, at(9, 0))).toBe(key(2, at(10, 30)));
+    });
+
+    it("changes when only a road's tier changes: tinted to plain, then lit", () => {
+      expect(new Set([key(1), key(2), key(3)]).size).toBe(3);
+    });
+
+    it("stays when a road is driven again beyond the top tier", () => {
+      expect(key(3)).toBe(key(40));
+    });
+
+    it("does not notice a roof band on a commercial building", () => {
+      // 4 h old and beside a busy road, the house is tier 3, so the band it was built in does not show
+      const tier3 = (builtAt: number) => layoutKey(layout(street(2, builtAt), builtAt + 4 * 3_600_000));
+      expect(tier3(at(19))).toBe(tier3(at(23)));
+    });
+
+    it("changes with a streetlight placement alone", () => {
+      const placed = layout(street(3), at(9, 1));
+      const without = placed.filter((p) => p.model !== "roads/light-square");
+      expect(layoutKey(placed)).not.toBe(layoutKey(without));
+    });
+
+    it("changes with scale alone", () => {
+      const placed = layout(street(2), at(9, 1));
+      const bigger = placed.map((p, i) => (i === 0 ? { ...p, scale: p.scale * 1.5 } : p));
+      expect(layoutKey(bigger)).not.toBe(layoutKey(placed));
+    });
+
+    it("changes with colour alone", () => {
+      const placed = layout(street(2), at(9, 1));
+      const recoloured = placed.map((p, i) => (i === 0 ? { ...p, colour: 0x123456 } : p));
+      expect(layoutKey(recoloured)).not.toBe(layoutKey(placed));
+    });
   });
 });

@@ -2,14 +2,17 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { cellKey, type CitySim } from "../sims/city";
-import { layoutCells, layoutKey, MODEL_NAMES, ROLLER } from "./pieces";
+import { patchPalette, readTexel, ROOF_TEXEL } from "./palette-shader";
+import { layoutCells, layoutKey, MODEL_NAMES, ROLLER, type Looks } from "./pieces";
 
 const urls = import.meta.glob("../assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
 
 /** One model flattened to a single geometry and material, ready to instance. */
 interface Model {
   geo: THREE.BufferGeometry;
-  mat: THREE.Material;
+  mat: THREE.MeshLambertMaterial;
+  /** The model's palette picture, which suburban roofs are read from. */
+  map: THREE.Texture | null;
 }
 
 async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
@@ -38,7 +41,7 @@ async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
   const geo = mergeGeometries(parts);
   if (!geo) throw new Error(`model ${path} could not be merged into one geometry`);
   if (map) (map as THREE.Texture).colorSpace = THREE.SRGBColorSpace;
-  return { geo, mat: new THREE.MeshLambertMaterial({ map }) };
+  return { geo, mat: new THREE.MeshLambertMaterial({ map }), map };
 }
 
 /** Cells this far from the roller (in each axis) are built; the camera sees far fewer. */
@@ -98,11 +101,21 @@ export class CityView3D {
   async load(): Promise<void> {
     const loader = new GLTFLoader();
     await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(loader, n))));
+    this.colourRoofs();
     const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
     this.roller.scale.setScalar(ROLLER.scale);
     this.scene.add(this.roller);
     this.invalidate();
+  }
+
+  /** Suburban houses swap their roof green for the colour of each instance; every other model is left as it is. */
+  private colourRoofs(): void {
+    const suburban = [...this.models].filter(([name]) => name.startsWith("suburban/")).map(([, m]) => m);
+    const image = suburban[0]?.map?.image as (CanvasImageSource & { width: number; height: number }) | undefined;
+    if (!image) throw new Error("suburban models have no palette texture");
+    const roofTexel = readTexel(image, ROOF_TEXEL.x, ROOF_TEXEL.y);
+    for (const m of suburban) patchPalette(m.mat, roofTexel);
   }
 
   /** Show a different city (the dev page starts over or loads a recording). */
@@ -142,19 +155,23 @@ export class CityView3D {
   private rebuild(t: number): boolean {
     const at = this.sim.rollerAt();
     const has = (x: number, y: number) => this.sim.road.has(cellKey(x, y));
-    const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), VIEW_RADIUS);
+    const looks: Looks = {
+      driven: (x, y) => this.sim.road.get(cellKey(x, y)) ?? 0,
+      built: (x, y) => this.sim.lots.get(cellKey(x, y)) ?? 0,
+    };
+    const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), VIEW_RADIUS, looks);
     const key = layoutKey(placed);
     if (key === this.builtKey) return false;
     this.builtKey = key;
 
-    const buckets = new Map<string, THREE.Matrix4[]>();
+    const buckets = new Map<string, { m: THREE.Matrix4; colour: number }[]>();
     const up = new THREE.Vector3(0, 1, 0);
     const spin = [0, 1, 2, 3].map((k) => new THREE.Quaternion().setFromAxisAngle(up, (k * Math.PI) / 2));
     for (const p of placed) {
       const m = new THREE.Matrix4().compose(new THREE.Vector3(p.x, 0, p.y), spin[p.turns], new THREE.Vector3(p.scale, p.scale, p.scale));
       let list = buckets.get(p.model);
       if (!list) buckets.set(p.model, (list = []));
-      list.push(m);
+      list.push({ m, colour: p.colour });
     }
     for (const [name, mesh] of this.meshes) {
       if (!buckets.has(name)) mesh.count = 0;
@@ -172,9 +189,14 @@ export class CityView3D {
         this.meshes.set(name, mesh);
         this.scene.add(mesh);
       }
-      list.forEach((m, i) => mesh!.setMatrixAt(i, m));
+      const colour = new THREE.Color();
+      list.forEach((item, i) => {
+        mesh!.setMatrixAt(i, item.m);
+        mesh!.setColorAt(i, colour.setHex(item.colour));
+      });
       mesh.count = list.length;
       mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor!.needsUpdate = true;
     }
     return true;
   }
