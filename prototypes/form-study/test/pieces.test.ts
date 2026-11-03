@@ -1,0 +1,98 @@
+import { describe, expect, it } from "vitest";
+import { houseTurns, housePiece, HOUSE_POOLS, ROAD_BASE, roadPiece, rotMask } from "../src/render/pieces";
+
+const baseOf = (model: string) => ROAD_BASE.find(([name]) => name === model)![1];
+
+describe("roadPiece", () => {
+  it("maps every road mask to a piece whose rotated base equals it", () => {
+    for (let mask = 1; mask <= 15; mask++) {
+      const { model, turns } = roadPiece(mask);
+      let m = baseOf(model);
+      for (let k = 0; k < turns; k++) m = rotMask(m);
+      expect(m, `mask ${mask} via ${model} x${turns}`).toBe(mask);
+    }
+  });
+
+  it("uses the square for a road with no neighbours", () => {
+    expect(roadPiece(0)).toEqual({ model: "roads/road-square", turns: 0 });
+  });
+
+  it("picks the piece by how many neighbours there are", () => {
+    expect(roadPiece(1).model).toBe("roads/road-end");
+    expect(roadPiece(5).model).toBe("roads/road-straight");
+    expect(roadPiece(10).model).toBe("roads/road-straight");
+    expect(roadPiece(3).model).toBe("roads/road-bend");
+    expect(roadPiece(7).model).toBe("roads/road-intersection");
+    expect(roadPiece(15).model).toBe("roads/road-crossroad");
+  });
+
+  it("leaves each piece unturned where it already fits, as the models are drawn", () => {
+    // read off the Kenney models seen from above: the end opens east, the straight runs
+    // east-west, the bend joins south and west, the T joins west, east and south
+    expect(roadPiece(2)).toEqual({ model: "roads/road-end", turns: 0 });
+    expect(roadPiece(10)).toEqual({ model: "roads/road-straight", turns: 0 });
+    expect(roadPiece(12)).toEqual({ model: "roads/road-bend", turns: 0 });
+    expect(roadPiece(14)).toEqual({ model: "roads/road-intersection", turns: 0 });
+  });
+
+  it("turns each +90 degrees from south to east to north to west", () => {
+    expect(rotMask(0b0100)).toBe(0b0010); // S -> E
+    expect(rotMask(0b0010)).toBe(0b0001); // E -> N
+    expect(rotMask(0b0001)).toBe(0b1000); // N -> W
+    expect(rotMask(0b1000)).toBe(0b0100); // W -> S
+  });
+});
+
+describe("houseTurns", () => {
+  const roadAt = (...cells: [number, number][]) => (x: number, y: number) => cells.some(([cx, cy]) => cx === x && cy === y);
+  // the models' fronts face north at rotation 0, as read off them; rotMask turns a direction bit the same way the model turns
+  const frontAfter = (turns: number) => {
+    let front = 1; // N
+    for (let k = 0; k < turns; k++) front = rotMask(front);
+    return front;
+  };
+
+  it("faces the road: road only to the north leaves the house as it is drawn", () => {
+    expect(houseTurns(roadAt([0, -1]), 0, 0)).toBe(0);
+  });
+
+  it("turns the front to a road on each other side", () => {
+    expect(houseTurns(roadAt([0, 1]), 0, 0)).toBe(2); // south
+    expect(houseTurns(roadAt([1, 0]), 0, 0)).toBe(3); // east
+    expect(houseTurns(roadAt([-1, 0]), 0, 0)).toBe(1); // west
+  });
+
+  it("points the turned front at the road for every side", () => {
+    const sides: [number, number, number][] = [
+      [0, -1, 1], // N
+      [1, 0, 2], // E
+      [0, 1, 4], // S
+      [-1, 0, 8], // W
+    ];
+    for (const [dx, dy, bit] of sides) expect(frontAfter(houseTurns(roadAt([dx, dy]), 0, 0))).toBe(bit);
+  });
+
+  it("takes the first road in the order south, east, north, west", () => {
+    expect(frontAfter(houseTurns(roadAt([0, 1], [1, 0], [0, -1], [-1, 0]), 0, 0))).toBe(4);
+    expect(frontAfter(houseTurns(roadAt([1, 0], [0, -1], [-1, 0]), 0, 0))).toBe(2);
+    expect(frontAfter(houseTurns(roadAt([0, -1], [-1, 0]), 0, 0))).toBe(1);
+  });
+});
+
+describe("housePiece", () => {
+  it("draws a tier's house from that tier's pool", () => {
+    for (const tier of [1, 2, 3] as const) {
+      for (let i = 0; i < 50; i++) expect(HOUSE_POOLS[tier - 1]).toContain(housePiece(tier, i, -i * 3));
+    }
+  });
+
+  it("picks the same house for the same cell every time", () => {
+    expect(housePiece(2, 14, -7)).toBe(housePiece(2, 14, -7));
+  });
+
+  it("varies from cell to cell", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) seen.add(housePiece(3, i, 2 * i + 1));
+    expect(seen.size).toBeGreaterThan(3);
+  });
+});

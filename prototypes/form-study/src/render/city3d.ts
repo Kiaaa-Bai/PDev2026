@@ -1,19 +1,19 @@
-// THROWAWAY performance spike (2026-11-03): Kenney 3D models drawn live with
-// Three.js, to measure the cost against the 2D window. Not part of the design.
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { cellKey, type CitySim } from "./sims/city";
+import { cellKey, type CitySim } from "../sims/city";
+import { HOUSE_POOLS, HOUSE_SCALE, housePiece, houseTurns, ROAD_BASE, roadPiece, ROLLER } from "./pieces";
 
-const urls = import.meta.glob("./assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
+const urls = import.meta.glob("../assets/kenney/**/*.glb", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
 
+/** One model flattened to a single geometry and material, ready to instance. */
 interface Model {
   geo: THREE.BufferGeometry;
   mat: THREE.Material;
 }
 
 async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
-  const url = urls[`./assets/kenney/${path}.glb`];
+  const url = urls[`../assets/kenney/${path}.glb`];
   if (!url) throw new Error(`missing model ${path}`);
   const gltf = await loader.loadAsync(url);
   gltf.scene.updateMatrixWorld(true);
@@ -22,6 +22,7 @@ async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
   gltf.scene.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
+    // bake each node's transform in, and keep only what a Lambert material reads, so the parts merge
     const g = mesh.geometry.clone();
     g.applyMatrix4(mesh.matrixWorld);
     for (const name of Object.keys(g.attributes)) if (!["position", "normal", "uv"].includes(name)) g.deleteAttribute(name);
@@ -33,84 +34,94 @@ async function loadModel(loader: GLTFLoader, path: string): Promise<Model> {
   return { geo, mat: new THREE.MeshLambertMaterial({ map }) };
 }
 
-/** Road neighbour bits: N=1 E=2 S=4 W=8. Rotating +90° about Y turns S→E→N→W→S. */
-const rotMask = (m: number) => ((m & 1) << 3) | ((m & 2) >> 1) | ((m & 4) >> 1) | ((m & 8) >> 1);
-
-/** Each road piece with the neighbours it joins at rotation 0. */
-const ROAD_BASE: [string, number][] = [
-  ["roads/road-square", 0],
-  ["roads/road-end", 4],
-  ["roads/road-straight", 5],
-  ["roads/road-bend", 6],
-  ["roads/road-intersection", 7],
-  ["roads/road-crossroad", 15],
-];
-
-function roadPiece(mask: number): { name: string; turns: number } {
-  for (const [name, base] of ROAD_BASE) {
-    let m = base;
-    for (let k = 0; k < 4; k++) {
-      if (m === mask) return { name, turns: k };
-      m = rotMask(m);
-    }
-  }
-  return { name: "roads/road-square", turns: 0 };
-}
-
-const HOUSES = [
-  "abcdefg".split("").map((c) => `suburban/building-type-${c}`),
-  "hijklmn".split("").map((c) => `suburban/building-type-${c}`),
-  "abcdefghijklmn".split("").map((c) => `commercial/building-${c}`),
-];
-
+/** Cells this far from the roller (in each axis) are built; the camera sees far fewer. */
 const VIEW_RADIUS = 30;
-const HALF_HEIGHT = 5; // tiles visible above and below the roller
+/** Tiles visible above and below the roller. */
+const DEFAULT_HALF_HEIGHT = 5;
+const PIXEL_RATIO = 2;
+const MAX_FPS = 30;
+/** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
+const ELEVATION = Math.PI / 6;
+const CAMERA_DISTANCE = 50;
 
-export class ThreeCityView {
-  readonly renderer: THREE.WebGLRenderer;
+/**
+ * The city as live 3D models seen from above at an angle, the camera following the roller.
+ * One instanced mesh per model keeps it to a couple of dozen draw calls.
+ */
+export class CityView3D {
   readonly canvas: HTMLCanvasElement;
+  private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.OrthographicCamera;
+  private ground: THREE.Mesh;
   private models = new Map<string, Model>();
   private meshes = new Map<string, THREE.InstancedMesh>();
   private roller!: THREE.Mesh;
   private builtFor = "";
   private lastSig = "";
-  private lastRender = 0;
-  frames = 0;
+  private lastRender = -Infinity;
 
-  constructor(private sim: CitySim, readonly width: number, readonly height: number) {
+  constructor(
+    private sim: CitySim,
+    private width: number,
+    private height: number,
+  ) {
+    // Lambert shading, no shadows, no antialiasing: the cheapest picture that still reads as 3D.
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power" });
+    this.renderer.setPixelRatio(PIXEL_RATIO);
     this.renderer.setSize(width, height);
     this.renderer.setClearColor(0x9fd3e8);
     this.canvas = this.renderer.domElement;
-    const aspect = width / height;
-    this.camera = new THREE.OrthographicCamera(-HALF_HEIGHT * aspect, HALF_HEIGHT * aspect, HALF_HEIGHT, -HALF_HEIGHT, 0.1, 200);
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+    this.setHalfHeight(DEFAULT_HALF_HEIGHT);
     this.scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x6a8a50, 1.6));
     const sun = new THREE.DirectionalLight(0xffffff, 1.8);
     sun.position.set(4, 10, 2);
     this.scene.add(sun);
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshLambertMaterial({ color: 0x8ccf68 }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.01;
-    ground.name = "ground";
-    this.scene.add(ground);
+    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshLambertMaterial({ color: 0x8ccf68 }));
+    this.ground.rotation.x = -Math.PI / 2;
+    this.scene.add(this.ground);
   }
 
+  /** Loads every model; call once before the first update. */
   async load(): Promise<void> {
     const loader = new GLTFLoader();
-    const names = [...ROAD_BASE.map(([n]) => n), ...HOUSES.flat(), "car/tractor-shovel"];
+    const names = [...ROAD_BASE.map(([name]) => name), ...HOUSE_POOLS.flat(), ROLLER.model];
     await Promise.all(names.map(async (n) => this.models.set(n, await loadModel(loader, n))));
-    const r = this.models.get("car/tractor-shovel")!;
+    const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
-    this.roller.scale.setScalar(0.4);
+    this.roller.scale.setScalar(ROLLER.scale);
     this.scene.add(this.roller);
+    this.invalidate();
   }
 
-  setPixelRatio(r: number): void {
-    this.renderer.setPixelRatio(r);
-    this.renderer.setSize(this.width, this.height);
+  /** Show a different city (the dev page starts over or loads a recording). */
+  setSim(sim: CitySim): void {
+    this.sim = sim;
+    this.builtFor = "";
+    this.invalidate();
+  }
+
+  /** Tiles visible above and below the roller: smaller zooms in. */
+  setHalfHeight(h: number): void {
+    const aspect = this.width / this.height;
+    const c = this.camera;
+    c.left = -h * aspect;
+    c.right = h * aspect;
+    c.top = h;
+    c.bottom = -h;
+    c.updateProjectionMatrix();
+    this.invalidate();
+  }
+
+  /** Draw again on the next update, e.g. after the canvas was hidden. */
+  invalidate(): void {
     this.lastSig = "";
+  }
+
+  stat(): string {
+    const parked = this.sim.parked() ? " · parked" : "";
+    return `${this.sim.road.size.toLocaleString()} road tiles · ${this.sim.houses(this.sim.time()).toLocaleString()} houses${parked}`;
   }
 
   /** Rebuild instances around the roller: only cells within VIEW_RADIUS are drawn. */
@@ -119,14 +130,12 @@ export class ThreeCityView {
     const cx = Math.round(at.x);
     const cy = Math.round(at.y);
     const buckets = new Map<string, THREE.Matrix4[]>();
-    const put = (name: string, x: number, y: number, turns: number, scale: number) => {
-      const m = new THREE.Matrix4().compose(
-        new THREE.Vector3(x, 0, y),
-        new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), (turns * Math.PI) / 2),
-        new THREE.Vector3(scale, scale, scale),
-      );
-      let list = buckets.get(name);
-      if (!list) buckets.set(name, (list = []));
+    const up = new THREE.Vector3(0, 1, 0);
+    const spin = [0, 1, 2, 3].map((k) => new THREE.Quaternion().setFromAxisAngle(up, (k * Math.PI) / 2));
+    const put = (model: string, x: number, y: number, turns: number, scale: number) => {
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(x, 0, y), spin[turns], new THREE.Vector3(scale, scale, scale));
+      let list = buckets.get(model);
+      if (!list) buckets.set(model, (list = []));
       list.push(m);
     };
     const has = (x: number, y: number) => this.sim.road.has(cellKey(x, y));
@@ -135,16 +144,11 @@ export class ThreeCityView {
         if (has(x, y)) {
           const mask = (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) | (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
           const p = roadPiece(mask);
-          put(p.name, x, y, p.turns, 1);
+          put(p.model, x, y, p.turns, 1);
           continue;
         }
         const tier = this.sim.houseTier(x, y, t);
-        if (!tier) continue;
-        // face the first road neighbour: model fronts look south (+z) at rotation 0
-        const turns = has(x, y + 1) ? 0 : has(x + 1, y) ? 1 : has(x, y - 1) ? 2 : 3;
-        const pool = HOUSES[tier - 1];
-        const pick = pool[Math.abs((x * 73856093) ^ (y * 19349663)) % pool.length];
-        put(pick, x, y, turns, tier === 3 ? 0.8 : 0.7);
+        if (tier) put(housePiece(tier, x, y), x, y, houseTurns(has, x, y), HOUSE_SCALE[tier - 1]);
       }
     }
     for (const [name, mesh] of this.meshes) {
@@ -169,13 +173,14 @@ export class ThreeCityView {
     }
   }
 
-  /** Draw if something changed, at most `fps` times a second. Returns true when it drew. */
-  update(now: number, fps = 30): boolean {
-    if (now - this.lastRender < 1000 / fps) return false;
+  /** Draw if something changed, at most MAX_FPS times a second. Returns true when it drew. */
+  update(now: number): boolean {
+    if (!this.roller || now - this.lastRender < 1000 / MAX_FPS) return false;
     const t = this.sim.time();
     const at = this.sim.rollerAt();
+    // the instances are rebuilt when the roller has moved a few cells or the city changed
     const cellSig = `${Math.round(at.x / 4)},${Math.round(at.y / 4)},${this.sim.version},${Math.floor(t / 5000)}`;
-    const sig = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${cellSig}`;
+    const sig = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir},${cellSig}`;
     if (sig === this.lastSig) return false;
     this.lastSig = sig;
     if (cellSig !== this.builtFor) {
@@ -183,16 +188,13 @@ export class ThreeCityView {
       this.rebuild(t);
     }
     this.roller.position.set(at.x, 0.02, at.y);
-    // roller model drives toward -z at rotation 0; headings: 0 E, 1 S, 2 W, 3 N
-    this.roller.rotation.y = [-Math.PI / 2, Math.PI, Math.PI / 2, 0][this.sim.roller.dir];
-    const d = 50;
-    const elev = Math.PI / 6;
-    this.camera.position.set(at.x + d * Math.cos(elev) * Math.SQRT1_2, d * Math.sin(elev), at.y + d * Math.cos(elev) * Math.SQRT1_2);
+    this.roller.rotation.y = ROLLER.yaw[this.sim.roller.dir];
+    const flat = CAMERA_DISTANCE * Math.cos(ELEVATION) * Math.SQRT1_2;
+    this.camera.position.set(at.x + flat, CAMERA_DISTANCE * Math.sin(ELEVATION), at.y + flat);
     this.camera.lookAt(at.x, 0, at.y);
-    this.scene.getObjectByName("ground")!.position.set(at.x, -0.01, at.y);
+    this.ground.position.set(at.x, -0.01, at.y);
     this.renderer.render(this.scene, this.camera);
     this.lastRender = now;
-    this.frames++;
     return true;
   }
 }

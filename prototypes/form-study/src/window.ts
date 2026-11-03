@@ -6,19 +6,16 @@ import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
 import { Feeder } from "./drive";
 import { Heat, type Bounds } from "./heat";
-import { CityView } from "./render/city";
+import { CityView3D } from "./render/city3d";
 import { HeatView } from "./render/heat";
 import { PANEL_H, PANEL_W } from "./render/panel";
 import { CitySim } from "./sims/city";
 import type { Sim } from "./sims/types";
-import { loadTiles } from "./tiles";
 
 const TABS = ["City", "Heat"];
 const TAB_KEY = "trackpad.tab";
 const CITY_TAB = 0;
 const HEAT_TAB = 1;
-/** Keep repainting this long after a change, so a short animation can play out. */
-const SETTLE_MS = 400;
 /** The city is saved this often, and when the window closes. */
 const SAVE_EVERY_MS = 5 * 60_000;
 
@@ -65,11 +62,11 @@ async function boot() {
     hudEl.textContent = "Open this page from the Capture app";
     return;
   }
-  await loadTiles();
   // The window stays open all day, so render only when something changed.
+  // The City tab is its own 3D canvas; the Heat tab is Pixi.
   const app = new Application();
   await app.init({ width: PANEL_W, height: PANEL_H, background: "#111111", antialias: false, roundPixels: true, autoStart: false });
-  stageEl.append(app.canvas as HTMLCanvasElement);
+  const heatCanvas = app.canvas as HTMLCanvasElement;
 
   // Records are screen points; the heat map wants them in 0–1 over the displays.
   const [bx, by, bw, bh] = await invoke<number[]>("display_bounds");
@@ -82,8 +79,11 @@ async function boot() {
   const saved = await loadCity();
   const city = saved ?? new CitySim(CITY);
   const sims: Sim[] = [city];
-  const views = [new CityView(city), new HeatView(heat, fingers)];
-  views.forEach((v) => app.stage.addChild(v.root));
+  const cityView = new CityView3D(city, PANEL_W, PANEL_H);
+  await cityView.load();
+  const heatView = new HeatView(heat, fingers);
+  app.stage.addChild(heatView.root);
+  stageEl.append(cityView.canvas, heatCanvas);
   const feeder = new Feeder(() => sims);
 
   function take(r: TouchRecord) {
@@ -120,7 +120,7 @@ async function boot() {
   ready = true;
 
   let active = savedTab();
-  let shown = -1;
+  let heatSig = "";
   const buttons = TABS.map((name, i) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -133,7 +133,11 @@ async function boot() {
 
   function show(i: number) {
     active = i;
-    views.forEach((v, j) => (v.root.visible = j === i));
+    // only the active tab's canvas is visible, and it repaints once it is shown again
+    cityView.canvas.style.display = i === CITY_TAB ? "block" : "none";
+    heatCanvas.style.display = i === HEAT_TAB ? "block" : "none";
+    cityView.invalidate();
+    heatSig = "";
     buttons.forEach((b, j) => b.classList.toggle("on", j === i));
     saveTab(i);
   }
@@ -144,30 +148,23 @@ async function boot() {
   });
   show(active);
 
-  let lastSig = "";
-  let changedAt = 0;
   let hud = "";
   function frame() {
     const now = performance.now();
     for (const sim of sims) sim.advanceTo(Date.now());
-    // Each tab repaints only for changes it shows. The roller moves on its own,
-    // so the City tab repaints as it crosses each pixel.
-    const at = city.rollerAt();
-    const cityState =
-      active === CITY_TAB ? `${city.version},${Math.round(at.x * 16)},${Math.round(at.y * 16)},${Math.floor(city.time() / 5000)}` : "";
-    // The heat map repaints on each point and when the pointer lifts.
-    const heatState = active === HEAT_TAB ? `${heat.version},${fingers.size}` : "";
-    const sig = [active, cityState, heatState].join(",");
-    if (sig !== lastSig || shown !== active) {
-      lastSig = sig;
-      shown = active;
-      changedAt = now;
+    // Each tab repaints only for changes it shows. The 3D city decides for itself
+    // (the roller moves on its own); the heat map repaints on each point and when the pointer lifts.
+    if (active === CITY_TAB) {
+      cityView.update(now);
+    } else {
+      const sig = `${heat.version},${fingers.size}`;
+      if (sig !== heatSig) {
+        heatSig = sig;
+        heatView.update(now);
+        app.render();
+      }
     }
-    if (now - changedAt < SETTLE_MS) {
-      views.forEach((v) => v.update(now));
-      app.render();
-    }
-    const text = `${views[active].stat()} · ${source}`;
+    const text = `${(active === CITY_TAB ? cityView : heatView).stat()} · ${source}`;
     if (text !== hud) hudEl.textContent = hud = text;
     requestAnimationFrame(frame);
   }

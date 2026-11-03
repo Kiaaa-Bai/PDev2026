@@ -1,56 +1,38 @@
 import "./style.css";
-import type { Container } from "pixi.js";
 import { CITY } from "./config";
 import { parseJsonl, toStrokes } from "./data";
 import { attachLive, Feeder, inputSims } from "./drive";
-import { CityView } from "./render/city";
-import { createPanel, type Panel } from "./render/panel";
+import { CityView3D } from "./render/city3d";
+import { createPanel, PANEL_H, PANEL_W } from "./render/panel";
 import { CitySim } from "./sims/city";
 import type { Sim } from "./sims/types";
-import { loadTiles } from "./tiles";
-
-interface View {
-  root: Container;
-  update(now: number): void;
-  stat(): string;
-  destroy(): void;
-}
 
 interface World {
   mode: "live" | "file";
   sims: Sim[];
-  views: View[];
   feeder: Feeder;
 }
 
 const statusEl = document.querySelector<HTMLElement>("#status")!;
 const host = document.querySelector<HTMLElement>("#panels")!;
 
-function makeWorld(mode: World["mode"], panels: Panel[]): World {
-  const city = new CitySim(CITY);
-  const views: View[] = [new CityView(city)];
-  views.forEach((v, i) => panels[i].app.stage.addChild(v.root));
-  const sims = [city];
-  return { mode, sims, views, feeder: new Feeder(() => sims) };
-}
-
 async function boot() {
-  await loadTiles();
-  const panels: Panel[] = [];
-  panels.push(await createPanel(host, "City"));
+  const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H);
+  await view.load();
+  const panel = createPanel(host, "City", view.canvas);
 
-  let world = makeWorld("live", panels);
+  /** A fresh city on the view: live (the mouse drives it) or file (a recording drives it). */
+  function makeWorld(mode: World["mode"]): World {
+    const city = new CitySim(CITY);
+    view.setSim(city);
+    const sims = [city];
+    return { mode, sims, feeder: new Feeder(() => sims) };
+  }
+
+  let world = makeWorld("live");
   // The mouse is finger 0 and, in live mode, drives the city; its records are page pixels.
   const liveFeeder = new Feeder(() => inputSims(world.mode, world.sims));
-  attachLive(
-    panels.map((p) => p.canvas),
-    (r) => liveFeeder.push(r),
-  );
-
-  function swap(next: World) {
-    world.views.forEach((v) => v.destroy());
-    world = next;
-  }
+  attachLive([panel.canvas], (r) => liveFeeder.push(r));
 
   function loadText(text: string, name: string) {
     const records = parseJsonl(text);
@@ -59,13 +41,13 @@ async function boot() {
       statusEl.textContent = `No touch records in ${name}`;
       return;
     }
-    swap(makeWorld("file", panels));
+    world = makeWorld("file");
     for (const r of records) world.feeder.push(r);
     statusEl.textContent = `${name}: ${strokes.length.toLocaleString()} strokes · Reset to draw`;
   }
 
   document.querySelector("#reset")!.addEventListener("click", () => {
-    swap(makeWorld("live", panels));
+    world = makeWorld("live");
     statusEl.textContent = "Live: drag on the panel";
   });
 
@@ -84,10 +66,8 @@ async function boot() {
   function frame() {
     const now = Date.now();
     if (world.mode === "live") for (const sim of world.sims) sim.advanceTo(now);
-    world.views.forEach((v, i) => {
-      v.update(performance.now());
-      panels[i].stat.textContent = v.stat();
-    });
+    view.update(performance.now());
+    panel.stat.textContent = view.stat();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
