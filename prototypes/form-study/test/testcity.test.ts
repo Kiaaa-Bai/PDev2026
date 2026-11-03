@@ -3,7 +3,7 @@ import { CITY } from "../src/config";
 import { parseJsonl, toStrokes, type TouchRecord } from "../src/data";
 import { Feeder } from "../src/drive";
 import { CitySim } from "../src/sims/city";
-import { SCREEN, testCityDayFiles, testCityRecords } from "../src/sims/testcity";
+import { SCREEN, testCityDayFiles, testCityRecords, testCityStart, testCityTargetProblem } from "../src/sims/testcity";
 
 /** A Monday morning in this machine's time zone; the generated days start on its date. */
 const START = new Date(2026, 9, 12, 7, 30).getTime();
@@ -119,5 +119,57 @@ describe("testCityDayFiles", () => {
 
   it("makes no files for no records", () => {
     expect(testCityDayFiles([])).toEqual([]);
+  });
+});
+
+describe("testCityStart", () => {
+  const tuesday = new Date(2026, 10, 3, 15, 10).getTime();
+  const local = (y: number, m: number, d: number) => new Date(y, m - 1, d).getTime();
+
+  it("starts at local midnight of the date it is given, whatever today is", () => {
+    expect(testCityStart(3, "2026-10-12", tuesday)).toBe(local(2026, 10, 12));
+    expect(testCityStart(3, "2026-10-12", local(2030, 1, 1))).toBe(local(2026, 10, 12));
+  });
+
+  it("gives the same files whenever it is run, once the date is given", () => {
+    const names = (now: number) =>
+      testCityDayFiles(testCityRecords(1, 2, testCityStart(2, "2026-10-12", now)!)).map((f) => f.name);
+    expect(names(tuesday)).toEqual(["cursor-2026-10-12.jsonl", "cursor-2026-10-13.jsonl"]);
+    expect(names(local(2031, 5, 5))).toEqual(names(tuesday));
+  });
+
+  it("without a date, the days end yesterday", () => {
+    expect(testCityStart(1, undefined, tuesday)).toBe(local(2026, 11, 2));
+    expect(testCityStart(3, undefined, tuesday)).toBe(local(2026, 10, 31));
+    expect(testCityStart(3, undefined, local(2027, 1, 2))).toBe(local(2026, 12, 30));
+  });
+
+  it("is null for anything that is not a real YYYY-MM-DD date", () => {
+    for (const bad of ["2026-02-30", "2026-13-01", "10/12/2026", "2026-1-5", "", "tomorrow", "2026-10-12x"]) {
+      expect(testCityStart(3, bad, tuesday), bad).toBeNull();
+    }
+  });
+});
+
+describe("testCityTargetProblem", () => {
+  const appData = "/Users/me/Library/Application Support/edu.nyu.kiabai.trackpad";
+  const data = "/work/prototypes/data";
+  const guarded = [appData, data];
+
+  it("accepts a new folder, an empty one, and one holding other files", () => {
+    expect(testCityTargetProblem("/work/prototypes/data/test-city", guarded, [])).toBeNull();
+    expect(testCityTargetProblem("/tmp/city", guarded, ["notes.txt", "touches-2026-10-10.jsonl"])).toBeNull();
+  });
+
+  it("refuses the app data folder and prototypes/data themselves, with or without a trailing slash", () => {
+    for (const dir of [appData, appData + "/", data, data + "/"]) {
+      expect(testCityTargetProblem(dir, guarded, []), dir).toMatch(/own data folder/);
+    }
+  });
+
+  it("refuses a folder that already holds day files or a city snapshot", () => {
+    expect(testCityTargetProblem("/tmp/city", guarded, ["cursor-2026-10-12.jsonl"])).toMatch(/cursor-2026-10-12\.jsonl/);
+    expect(testCityTargetProblem("/tmp/city", guarded, ["city-snapshot.json"])).toMatch(/city-snapshot\.json/);
+    expect(testCityTargetProblem("/tmp/city", guarded, ["city-snapshot.json.tmp"])).not.toBeNull();
   });
 });

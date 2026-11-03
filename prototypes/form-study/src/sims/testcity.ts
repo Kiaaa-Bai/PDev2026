@@ -104,3 +104,42 @@ export function testCityDayFiles(records: TouchRecord[]): { name: string; text: 
   }
   return [...lines].map(([name, day]) => ({ name, text: day.join("\n") + "\n" }));
 }
+
+/**
+ * Local midnight of the first day to generate: the date `start` ("YYYY-MM-DD") names when it is given,
+ * so a city can be made again exactly (same file names, same timestamps) on any later day; else `days`
+ * days before the date of `nowMs`, so the last day is yesterday. Null when `start` is not a real date.
+ */
+export function testCityStart(days: number, start: string | undefined, nowMs: number): number | null {
+  if (start === undefined) {
+    const now = new Date(nowMs);
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() - days).getTime();
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(start);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(y, mo - 1, d);
+  // 2026-02-30 would roll over into March; only a date that comes back as itself is real
+  return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d ? date.getTime() : null;
+}
+
+const DAY_FILE = /^cursor-\d{4}-\d{2}-\d{2}\.jsonl$/;
+
+/**
+ * Why a generated city must not be written into `dir`, or null when it may be. `dir` and `protectedDirs`
+ * are absolute paths (symlinks resolved); `existing` is what the folder already holds. A city goes
+ * only into a folder with no day files and no snapshot, so it never overwrites a real day, never
+ * mixes with days left from an earlier run, and no stale snapshot hides it.
+ */
+export function testCityTargetProblem(
+  dir: string,
+  protectedDirs: readonly string[],
+  existing: readonly string[],
+): string | null {
+  const trim = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
+  if (protectedDirs.some((p) => trim(p) === trim(dir))) {
+    return `${trim(dir)} is the app's own data folder; use another folder`;
+  }
+  const taken = existing.find((n) => DAY_FILE.test(n) || n.startsWith("city-snapshot.json"));
+  return taken === undefined ? null : `${trim(dir)} already holds ${taken}; use a new or empty folder`;
+}
