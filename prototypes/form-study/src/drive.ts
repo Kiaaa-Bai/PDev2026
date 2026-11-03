@@ -29,6 +29,17 @@ export class Feeder {
   }
 }
 
+/**
+ * The window's live city runs this far behind the wall clock. A record reaches the window some milliseconds
+ * after the moment it records, and a city already advanced past that moment would apply its turn late:
+ * its roller would have driven on in the old direction, so the city would differ from a replay of the
+ * same records (and from the one regrown after a restart). This is far more than that delay.
+ */
+export const LIVE_LAG_MS = 100;
+
+/** The moment the window's live city is advanced to at wall-clock time `now` (ms). */
+export const liveTime = (now: number): number => now - LIVE_LAG_MS;
+
 /** A loaded day runs on the recording's clock; mouse strokes would jump it to now. */
 export function inputSims(mode: "live" | "file", sims: Sim[]): Sim[] {
   return mode === "live" ? sims : [];

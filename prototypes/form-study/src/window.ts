@@ -1,10 +1,11 @@
 import "./window.css";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Application } from "pixi.js";
 import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
-import { Feeder } from "./drive";
+import { Feeder, liveTime } from "./drive";
 import { Heat, type Bounds } from "./heat";
 import { CityView3D } from "./render/city3d";
 import { HeatView } from "./render/heat";
@@ -152,7 +153,7 @@ async function boot() {
   let hud = "";
   function frame() {
     const now = performance.now();
-    for (const sim of sims) sim.advanceTo(Date.now());
+    for (const sim of sims) sim.advanceTo(liveTime(Date.now()));
     // Each tab repaints only for changes it shows. The 3D city decides for itself
     // (the roller moves on its own); the heat map repaints on each point and when the pointer lifts.
     if (active === CITY_TAB) {
@@ -172,7 +173,12 @@ async function boot() {
   requestAnimationFrame(frame);
 
   setInterval(() => saveCity(city), SAVE_EVERY_MS);
-  window.addEventListener("beforeunload", () => saveCity(city)); // best effort: the window may close first
+  // Closing the window waits for the save to land; the window is then destroyed (which the capability allows).
+  await getCurrentWindow().onCloseRequested(async () => {
+    saveCity(city);
+    await saving;
+  });
+  window.addEventListener("beforeunload", () => saveCity(city)); // best effort, for a reload
 }
 
 // A model that fails to load (or anything else in boot) would leave a blank window: say why.
