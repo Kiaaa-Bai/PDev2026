@@ -5,6 +5,7 @@ declare module "node:fs" {
   export function mkdirSync(path: string, options?: { recursive?: boolean }): void;
   export function readdirSync(path: string): string[];
   export function realpathSync(path: string): string;
+  export function unlinkSync(path: string): void;
   export function writeFileSync(path: string, data: string, options?: { flag?: string }): void;
 }
 declare module "node:os" {

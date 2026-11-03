@@ -6,7 +6,8 @@
 //
 //   start-date  YYYY-MM-DD of the first day. Give it for a city that can be made again exactly, on any
 //               later day (same file names, same timestamps). Default: `days` days before today, so the
-//               last day is yesterday (today's file belongs to the capture source, which appends to it).
+//               last day is yesterday. A last day of today or later is refused: today's file belongs to
+//               the capture source, which appends to it.
 //   seed        default 1.
 //
 // It never overwrites: it refuses a folder that already holds day files or a city snapshot (a real
@@ -15,7 +16,7 @@
 //
 // The generator lives in src/sims, whose imports have no file extensions, so Node cannot load it
 // directly; Vite's module runner (already a dependency) loads it instead.
-import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +51,8 @@ const { module } = await runnerImport<Generator>(fileURLToPath(new URL("../src/s
 
 const start = module.testCityStart(days, startArg, Date.now());
 if (start === null) fail(`start date "${startArg}" is not a real date; write it as YYYY-MM-DD`);
+const startProblem = module.testCityStartProblem(days, start, Date.now());
+if (startProblem) fail(startProblem);
 
 const dir = real(dirArg);
 const protectedDirs = [
@@ -64,8 +67,18 @@ if (problem) fail(problem);
 const records = module.testCityRecords(seed, days, start);
 const files = module.testCityDayFiles(records);
 
-mkdirSync(dir, { recursive: true });
-// flag "wx": fail rather than overwrite, whatever happened since the check above
-for (const f of files) writeFileSync(join(dir, f.name), f.text, { flag: "wx" });
+// flag "wx": fail rather than overwrite, whatever happened since the check above. A failure takes back
+// the files this run made (only those: wx made each of them) and says so, instead of leaving part of a city.
+const written: string[] = [];
+try {
+  mkdirSync(dir, { recursive: true });
+  for (const f of files) {
+    writeFileSync(join(dir, f.name), f.text, { flag: "wx" });
+    written.push(f.name);
+  }
+} catch (e) {
+  for (const name of written) unlinkSync(join(dir, name));
+  fail(`could not write the city into ${dir}: ${e instanceof Error ? e.message : String(e)}; no part of the city was kept`);
+}
 console.log(`${records.length} records in ${files.length} day files in ${dir}`);
 for (const f of files) console.log(`  ${f.name}`);

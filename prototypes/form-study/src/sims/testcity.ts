@@ -87,11 +87,14 @@ export function testCityRecords(seed: number, days: number, startMs: number): To
 
 const two = (n: number) => String(n).padStart(2, "0");
 
-/** The name the capture source gives the day file of the local day `t` falls in. */
-function dayFileName(t: number): string {
+/** The local date `t` falls in, as YYYY-MM-DD. */
+const localDate = (t: number): string => {
   const d = new Date(t);
-  return `cursor-${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}.jsonl`;
-}
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+};
+
+/** The name the capture source gives the day file of the local day `t` falls in. */
+const dayFileName = (t: number): string => `cursor-${localDate(t)}.jsonl`;
 
 /** The records as day files, one `cursor-YYYY-MM-DD.jsonl` per local day, a record to a line, in date order. */
 export function testCityDayFiles(records: TouchRecord[]): { name: string; text: string }[] {
@@ -123,7 +126,22 @@ export function testCityStart(days: number, start: string | undefined, nowMs: nu
   return date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d ? date.getTime() : null;
 }
 
-const DAY_FILE = /^cursor-\d{4}-\d{2}-\d{2}\.jsonl$/;
+/**
+ * Why `days` days from local midnight `startMs` must not be generated at `nowMs`, or null when they may.
+ * Today's day file belongs to the capture source, which appends to it, so the last day must be yesterday
+ * or earlier.
+ */
+export function testCityStartProblem(days: number, startMs: number, nowMs: number): string | null {
+  const first = new Date(startMs);
+  const last = new Date(first.getFullYear(), first.getMonth(), first.getDate() + days - 1).getTime();
+  const now = new Date(nowMs);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return last < today
+    ? null
+    : `the last day would be ${localDate(last)}, which is today or later; today's file belongs to the capture source. Start earlier or use fewer days`;
+}
+
+const DAY_FILE = /^cursor-\d{4}-\d{2}-\d{2}\.jsonl$/i;
 
 /**
  * Why a generated city must not be written into `dir`, or null when it may be. `dir` and `protectedDirs`
@@ -137,9 +155,11 @@ export function testCityTargetProblem(
   existing: readonly string[],
 ): string | null {
   const trim = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
-  if (protectedDirs.some((p) => trim(p) === trim(dir))) {
+  // case-blind: the Mac's file system treats Prototypes/Data and prototypes/data as one folder
+  const same = (a: string, b: string) => trim(a).toLowerCase() === trim(b).toLowerCase();
+  if (protectedDirs.some((p) => same(p, dir))) {
     return `${trim(dir)} is the app's own data folder; use another folder`;
   }
-  const taken = existing.find((n) => DAY_FILE.test(n) || n.startsWith("city-snapshot.json"));
+  const taken = existing.find((n) => DAY_FILE.test(n) || n.toLowerCase().startsWith("city-snapshot.json"));
   return taken === undefined ? null : `${trim(dir)} already holds ${taken}; use a new or empty folder`;
 }

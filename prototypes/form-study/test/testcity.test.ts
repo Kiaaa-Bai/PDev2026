@@ -3,7 +3,7 @@ import { CITY } from "../src/config";
 import { parseJsonl, toStrokes, type TouchRecord } from "../src/data";
 import { Feeder } from "../src/drive";
 import { CitySim } from "../src/sims/city";
-import { SCREEN, testCityDayFiles, testCityRecords, testCityStart, testCityTargetProblem } from "../src/sims/testcity";
+import { SCREEN, testCityDayFiles, testCityRecords, testCityStart, testCityStartProblem, testCityTargetProblem } from "../src/sims/testcity";
 
 /** A Monday morning in this machine's time zone; the generated days start on its date. */
 const START = new Date(2026, 9, 12, 7, 30).getTime();
@@ -167,9 +167,43 @@ describe("testCityTargetProblem", () => {
     }
   });
 
+  it("compares case-blind, as the Mac's file system does", () => {
+    for (const dir of ["/work/Prototypes/DATA", "/WORK/prototypes/data/", appData.toUpperCase(), appData.toLowerCase()]) {
+      expect(testCityTargetProblem(dir, guarded, []), dir).toMatch(/own data folder/);
+    }
+    expect(testCityTargetProblem("/work/Prototypes/Data/Test-City", guarded, [])).toBeNull();
+    expect(testCityTargetProblem("/tmp/city", guarded, ["CURSOR-2026-10-12.JSONL"])).not.toBeNull();
+    expect(testCityTargetProblem("/tmp/city", guarded, ["City-Snapshot.json"])).not.toBeNull();
+  });
+
   it("refuses a folder that already holds day files or a city snapshot", () => {
     expect(testCityTargetProblem("/tmp/city", guarded, ["cursor-2026-10-12.jsonl"])).toMatch(/cursor-2026-10-12\.jsonl/);
     expect(testCityTargetProblem("/tmp/city", guarded, ["city-snapshot.json"])).toMatch(/city-snapshot\.json/);
     expect(testCityTargetProblem("/tmp/city", guarded, ["city-snapshot.json.tmp"])).not.toBeNull();
+  });
+});
+
+describe("testCityStartProblem", () => {
+  const tuesday = new Date(2026, 10, 3, 15, 10).getTime();
+  const local = (y: number, m: number, d: number) => new Date(y, m - 1, d).getTime();
+
+  it("accepts days that all end before today, up to yesterday", () => {
+    expect(testCityStartProblem(3, local(2026, 10, 12), tuesday)).toBeNull();
+    expect(testCityStartProblem(3, local(2026, 10, 31), tuesday)).toBeNull();
+    expect(testCityStartProblem(1, local(2026, 11, 2), tuesday)).toBeNull();
+    expect(testCityStartProblem(2, local(2027, 2, 27), local(2027, 3, 1))).toBeNull();
+  });
+
+  it("refuses days that reach today, whose file the capture source appends to, or later", () => {
+    expect(testCityStartProblem(1, local(2026, 11, 3), tuesday)).toMatch(/2026-11-03.*today/);
+    expect(testCityStartProblem(3, local(2026, 11, 1), tuesday)).toMatch(/2026-11-03/);
+    expect(testCityStartProblem(1, local(2026, 12, 25), tuesday)).toMatch(/2026-12-25/);
+    expect(testCityStartProblem(3, local(2027, 2, 27), local(2027, 3, 1))).toMatch(/2027-03-01/);
+  });
+
+  it("never refuses the default start, which ends yesterday", () => {
+    for (const days of [1, 2, 30]) {
+      expect(testCityStartProblem(days, testCityStart(days, undefined, tuesday)!, tuesday)).toBeNull();
+    }
   });
 });
