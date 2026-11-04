@@ -29,6 +29,8 @@ export const SNAP_PT = 24;
 export const PEEK_AFTER_MS = 500;
 /** ... and away from the peek this long closes it. */
 export const UNPEEK_AFTER_MS = 2000;
+/** A moved window counts as settled once it has not moved for this long and the mouse button is up. */
+export const SETTLE_MS = 400;
 
 export interface ModeState {
   mode: Mode;
@@ -42,6 +44,11 @@ export interface ModeState {
   /** Whether the pointer is over the window, and since when it came in (edge) or went out (peek). */
   over: boolean;
   since: number | null;
+  /**
+   * Whether the pointer has been off the sketch since it docked: docked under the pointer (by the collapse button, or at
+   * the end of a drag), the next small move must not start a hover, so a peek opens only once it has left and come back.
+   */
+  armed: boolean;
   /** While hidden, the mode it comes back to. */
   back: Exclude<Mode, "hidden"> | null;
 }
@@ -111,7 +118,7 @@ export const canCollapse = (settings: ModeSettings): boolean => !settings.always
 
 /** The state for a window found at `rect`: already a sketch at an edge (the page was reloaded while docked), or full. */
 export function start(rect: Rect, monitor: Rect, settings: ModeSettings): ModeState {
-  const s: ModeState = { mode: "full", rect, monitor, side: null, dock: null, over: false, since: null, back: null };
+  const s: ModeState = { mode: "full", rect, monitor, side: null, dock: null, over: false, since: null, armed: true, back: null };
   const side = nearEdge(rect, monitor);
   const sketch = Math.abs(rect.w - EDGE_W) <= 1 && Math.abs(rect.h - EDGE_H) <= 1;
   if (settings.always3d || !sketch || !side) return s;
@@ -122,7 +129,7 @@ export function start(rect: Rect, monitor: Rect, settings: ModeSettings): ModeSt
 /** Docked as a sketch at `side`, its top at `y`. */
 function docked(s: ModeState, side: Side, y: number, monitor: Rect): ModeState {
   const dock = dockRect(side, y, monitor);
-  return { ...s, mode: "edge", rect: dock, monitor, side, dock, over: false, since: null };
+  return { ...s, mode: "edge", rect: dock, monitor, side, dock, over: false, since: null, armed: false };
 }
 
 /** The full window at `rect`, no longer docked. */
@@ -182,9 +189,10 @@ function stepEdge(s: ModeState, ev: ModeEvent): ModeState {
       return side ? docked(s, side, ev.rect.y, ev.monitor) : full(s, fullFrom(ev.rect, ev.monitor), ev.monitor);
     }
     case "pointerIn":
-      return s.over ? s : { ...s, over: true, since: ev.t };
+      // before the pointer has left once (docked under it), being over the sketch starts no hover
+      return s.over ? s : { ...s, over: true, since: s.armed ? ev.t : null };
     case "pointerOut":
-      return s.over ? { ...s, over: false, since: null } : s;
+      return s.over || !s.armed ? { ...s, over: false, since: null, armed: true } : s;
     case "tick":
       if (!s.over || s.since === null || ev.t - s.since < PEEK_AFTER_MS || !s.side || !s.dock) return s;
       return { ...s, mode: "peek", rect: peekRect(s.side, s.dock, s.monitor), over: true, since: null };
@@ -211,12 +219,18 @@ function stepPeek(s: ModeState, ev: ModeEvent): ModeState {
       return s.over ? { ...s, over: false, since: ev.t } : s;
     case "tick":
       if (s.over || s.since === null || ev.t - s.since < UNPEEK_AFTER_MS || !s.dock) return s;
-      return { ...s, mode: "edge", rect: s.dock, over: false, since: null };
+      // the pointer has been away from the peek, and so from the sketch inside it
+      return { ...s, mode: "edge", rect: s.dock, over: false, since: null, armed: true };
     case "click":
       return opened(s);
     default:
       return s;
   }
+}
+
+/** Whether a window last moved at `lastMoveAt` has come to rest by `now`: no move for SETTLE_MS, and the button up (a native drag held still is not over). */
+export function settled(lastMoveAt: number, now: number, buttonDown: boolean): boolean {
+  return !buttonDown && now - lastMoveAt >= SETTLE_MS;
 }
 
 /** When a tick next matters: the moment a hover opens a peek, or the pointer's absence closes it; null when none is due. */

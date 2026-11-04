@@ -14,6 +14,8 @@ import {
   peekRect,
   pointerIn,
   pointerOut,
+  SETTLE_MS,
+  settled,
   start,
   step,
   tick,
@@ -36,8 +38,8 @@ const run = (s: ModeState, evs: ModeEvent[], settings = OFF) => evs.reduce((acc,
 
 /** The full window in the middle of the screen. */
 const open = () => start(fullAt(400, 200), SCREEN, OFF);
-/** Docked at the left edge, its top at y = 300. */
-const docked = () => run(open(), [moved(fullAt(10, 300), SCREEN)]);
+/** Docked at the left edge, its top at y = 300, and the pointer has been off the sketch since (so hovering counts). */
+const docked = () => run(open(), [moved(fullAt(10, 300), SCREEN), pointerOut(0)]);
 
 describe("window modes", () => {
   it("hover 0.5 s peeks; out 2 s returns to edge", () => {
@@ -64,6 +66,20 @@ describe("window modes", () => {
     // back over the sketch, the half second starts again
     const again = run(s, [pointerIn(10_000), tick(10_400)]);
     expect(again.mode).toBe("edge");
+  });
+
+  it("docking under the pointer does not peek until the pointer has left once", () => {
+    // collapsed with the pointer on the button, and the sketch comes to rest under it
+    const edge = step(start(fullAt(100, 200), SCREEN, OFF), collapse, OFF);
+    const resting = run(edge, [pointerIn(1000), tick(1500), tick(9000)]);
+    expect(resting.mode).toBe("edge");
+    expect(nextTick(resting)).toBeNull();
+    // the same after a drag that docks: the hand is still on the sketch
+    const dragged = run(docked(), [moved(sketchAt(5, 500), SCREEN), pointerIn(1000), tick(1500), tick(9000)]);
+    expect(dragged.mode).toBe("edge");
+    // once the pointer has been off the sketch, coming back over it counts
+    const back = run(resting, [pointerOut(10_000), pointerIn(11_000), tick(11_500)]);
+    expect(back.mode).toBe("peek");
   });
 
   it("a pointer back over the peek within 2 s keeps it open", () => {
@@ -112,7 +128,8 @@ describe("window modes", () => {
     expect(away.rect).toEqual(fullAt(600, 400));
 
     // a peek moved away opens full where it is
-    const peek = run(left, [pointerIn(0), tick(500)]);
+    const peek = run(left, [pointerOut(0), pointerIn(0), tick(500)]);
+    expect(peek.mode).toBe("peek");
     const peekAway = step(peek, moved(fullAt(300, 200), SCREEN), OFF);
     expect(peekAway.mode).toBe("full");
     expect(peekAway.rect).toEqual(fullAt(300, 200));
@@ -197,5 +214,19 @@ describe("window modes", () => {
   it("a peek near the top or bottom is held inside the visible frame", () => {
     expect(peekRect("left", dockRect("left", 25, SCREEN), SCREEN).y).toBe(25);
     expect(peekRect("left", dockRect("left", 9999, SCREEN), SCREEN).y).toBe(25 + 830 - 380);
+  });
+});
+
+describe("settled", () => {
+  it("a pause with the button down does not settle", () => {
+    // the hand holds the window still mid-drag: no moves, but the button is down
+    expect(settled(1000, 1000 + SETTLE_MS, true)).toBe(false);
+    expect(settled(1000, 60_000, true)).toBe(false);
+  });
+
+  it("button up after 400 ms of no moves settles", () => {
+    expect(SETTLE_MS).toBe(400);
+    expect(settled(1000, 1400, false)).toBe(true);
+    expect(settled(1000, 1399, false)).toBe(false);
   });
 });

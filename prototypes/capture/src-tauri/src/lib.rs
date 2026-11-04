@@ -66,6 +66,13 @@ fn display_bounds() -> [f64; 4] {
     cursor::display_bounds()
 }
 
+/// Whether the primary mouse button is down: a native window drag never shows the page its mouse-up, so the window
+/// asks this before it takes a window that has stopped moving as put down.
+#[tauri::command]
+fn mouse_button_down() -> bool {
+    cursor::left_button_down()
+}
+
 #[tauri::command]
 fn capture_source(source: tauri::State<'_, CaptureSource>) -> String {
     source.0.to_string()
@@ -81,6 +88,7 @@ pub fn run() {
             load_snapshot,
             save_snapshot,
             display_bounds,
+            mouse_button_down,
             capture_source
         ])
         .setup(|app| {

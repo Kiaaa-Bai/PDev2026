@@ -22,6 +22,8 @@ import {
   pointerIn,
   pointerOut,
   samePlace,
+  SETTLE_MS,
+  settled,
   start,
   step,
   tick,
@@ -38,6 +40,7 @@ import { HeatView } from "./render/heat";
 import { skyAt } from "./render/looks";
 import { PANEL_H, PANEL_W } from "./render/panel";
 import { drawSketch, SKETCH_RADIUS, sketchItems } from "./render/sketch";
+import { FaultOnce } from "./render/traffic";
 import { CitySim } from "./sims/city";
 import type { Sim } from "./sims/types";
 
@@ -48,8 +51,8 @@ const CITY_TAB = 0;
 const HEAT_TAB = 1;
 /** The city is saved this often, and when the window closes. */
 const SAVE_EVERY_MS = 5 * 60_000;
-/** A move counts once the window has stayed put this long: a drag sends moves all the way, and only where it ends matters. */
-const SETTLE_MS = 400;
+/** While the mouse button is held after the window stopped moving (a drag paused), it is asked again this often. */
+const SETTLE_POLL_MS = 100;
 /** The sketch looks for a change this often, so it redraws at most 4 times a second. */
 const SKETCH_MS = 250;
 /** A press on the sketch that moves this far (CSS pixels) drags the window; one that does not is a click. */
@@ -392,18 +395,26 @@ async function boot() {
   // reached another cell, or night came or went; the 3D canvas is paused meanwhile.
   let sketchKey = "";
   let sketchTimer: ReturnType<typeof setTimeout> | undefined;
+  const sketchFault = new FaultOnce();
   function sketchFrame() {
-    for (const sim of sims) sim.advanceTo(liveTime(Date.now()));
-    const at = city.rollerAt();
-    const night = skyAt(skyClock()).night >= 0.5;
-    const key = `${city.version},${Math.round(at.x)},${Math.round(at.y)},${night}`;
-    const drew = key !== sketchKey;
-    if (drew) {
-      sketchKey = key;
-      drawSketch(sketchCtx!, sketchItems(city, at, SKETCH_RADIUS), { night });
-    }
-    if (dev) setHud(counted(drew, performance.now()));
+    // the next look is booked first, so a fault in this one cannot end the loop
     sketchTimer = setTimeout(sketchFrame, SKETCH_MS);
+    try {
+      for (const sim of sims) sim.advanceTo(liveTime(Date.now()));
+      const at = city.rollerAt();
+      const night = skyAt(skyClock()).night >= 0.5;
+      const key = `${city.version},${Math.round(at.x)},${Math.round(at.y)},${night}`;
+      const drew = key !== sketchKey;
+      if (drew) {
+        sketchKey = key;
+        drawSketch(sketchCtx!, sketchItems(city, at, SKETCH_RADIUS), { night });
+      }
+      if (dev) setHud(counted(drew, performance.now()));
+      sketchFault.ok();
+    } catch (e) {
+      // said once (and again if it is another fault), then it tries again at the next look
+      if (sketchFault.fail(e)) console.error("the sketch could not be drawn; it tries again", e);
+    }
   }
 
   /** Into a mode: what is shown, what is paused, and which loop draws. Hidden runs no loop at all; records still feed the city. */
@@ -452,20 +463,22 @@ async function boot() {
   function dispatch(ev: ModeEvent) {
     const prev = modes;
     const next = step(prev, ev, rules());
-    if (next === prev) return;
-    modes = next;
-    if (next.mode !== prev.mode) {
-      const now = performance.now();
-      tally[prev.mode].ms += now - tallySince;
-      tallySince = now;
-      enter(next.mode);
+    if (next !== prev) {
+      modes = next;
+      if (next.mode !== prev.mode) {
+        const now = performance.now();
+        tally[prev.mode].ms += now - tallySince;
+        tallySince = now;
+        enter(next.mode);
+      }
+      // coming back from hidden, or moved by the person, the window is already where it should be
+      const shown = next.mode !== "hidden" && prev.mode !== "hidden";
+      if (shown && (next.mode !== prev.mode || (next.mode === "edge" && !samePlace(next.rect, prev.rect)))) put(next);
     }
-    // coming back from hidden, or moved by the person, the window is already where it should be
-    const shown = next.mode !== "hidden" && prev.mode !== "hidden";
-    if (shown && (next.mode !== prev.mode || (next.mode === "edge" && !samePlace(next.rect, prev.rect)))) put(next);
-    // a hover or a leave is timed by a timer of its own, so the sketch's slow loop does not round it
+    // A hover or a leave is timed by a timer of its own, so the sketch's slow loop does not round it. It is booked again
+    // even when nothing changed: a tick that came early (the wall clock stepped back) must not leave none waiting.
     clearTimeout(tickTimer);
-    const due = nextTick(next);
+    const due = nextTick(modes);
     if (due !== null) tickTimer = setTimeout(() => dispatch(tick(Date.now())), Math.max(0, due - Date.now()));
   }
 
@@ -507,21 +520,50 @@ async function boot() {
   // Minimised (or covered), the page is hidden: nothing is drawn until it is shown again.
   document.addEventListener("visibilitychange", () => dispatch(visibility(document.visibilityState === "hidden")));
   enter(modes.mode);
+  // A window found at another size than its mode's (a sketch-sized window away from an edge, or one with Always 3D on,
+  // starts full) is put right at once, so the layout and the window agree.
+  if (place) {
+    const [w, h] = modes.mode === "edge" ? [EDGE_W, EDGE_H] : [FULL_W, FULL_H];
+    if (Math.abs(place.rect.w - w) > 1 || Math.abs(place.rect.h - h) > 1) put(modes);
+  }
 
   setInterval(() => saveCity(city), SAVE_EVERY_MS);
-  // A window moved by the person or put in place by `put` counts once it has stopped moving.
+  // A window moved by the person or put in place by `put` counts once it has settled: no move for SETTLE_MS and the mouse
+  // button up. A native drag (the title bar, or `startDragging` on the sketch) never shows the page its mouse-up, so the
+  // button is asked of the capture side; a hand holding the window still mid-drag keeps it from counting.
+  let lastMoveAt = -Infinity;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Each move starts a new wait; a look still out for an older one is dropped. */
+  let settleRound = 0;
+  const buttonFault = new FaultOnce();
+  const buttonDown = () =>
+    invoke<boolean>("mouse_button_down").catch((e: unknown) => {
+      // without the answer (an older capture build), the window settles as it did before: on the pause alone
+      if (buttonFault.fail(e)) console.error("could not ask whether the mouse button is down", e);
+      return false;
+    });
+  function lookSettled(round: number) {
+    buttonDown()
+      .then(async (down) => {
+        if (round !== settleRound) return;
+        const now = Date.now();
+        if (!settled(lastMoveAt, now, down)) {
+          settleTimer = setTimeout(() => lookSettled(round), down ? SETTLE_POLL_MS : Math.max(0, lastMoveAt + SETTLE_MS - now));
+          return;
+        }
+        const p = await placeOf(win);
+        if (round !== settleRound) return;
+        dragging = false;
+        if (p) dispatch(moved(p.rect, p.monitor));
+      })
+      .catch((e: unknown) => console.error("could not read where the window is", e));
+  }
   await win.onMoved(() => {
+    lastMoveAt = Date.now();
+    const round = ++settleRound;
     clearTimeout(settleTimer);
     clearTimeout(dragGiveUp); // a drag that moves the window ends when the window settles
-    settleTimer = setTimeout(() => {
-      placeOf(win)
-        .then((p) => {
-          dragging = false;
-          if (p) dispatch(moved(p.rect, p.monitor));
-        })
-        .catch((e: unknown) => console.error("could not read where the window is", e));
-    }, SETTLE_MS);
+    settleTimer = setTimeout(() => lookSettled(round), SETTLE_MS);
   });
   // Closing the window waits for the save to land; the window is then destroyed (which the capability allows).
   await getCurrentWindow().onCloseRequested(async () => {
@@ -542,6 +584,8 @@ async function boot() {
     await wait(DWELL_MS); // full
     dispatch(collapse);
     await wait(DWELL_MS); // edge
+    // the pointer leaves the sketch it docked under, and comes back over it
+    dispatch(pointerOut(Date.now()));
     dispatch(pointerIn(Date.now()));
     await wait(PEEK_AFTER_MS + DWELL_MS); // the hover opens a peek
     dispatch(pointerOut(Date.now()));
@@ -555,7 +599,8 @@ async function boot() {
     tally[modes.mode].ms += performance.now() - tallySince;
     tallySince = performance.now();
     const per = (m: Mode) => `${m} ${((tally[m].frames * 1000) / Math.max(1, tally[m].ms)).toFixed(1)}/s (${(tally[m].ms / 1000).toFixed(1)} s)`;
-    tourSummary = `tour: ${(["full", "edge", "peek", "hidden"] as const).map(per).join(" · ")}`;
+    const button = await invoke<boolean>("mouse_button_down").then(String, (e: unknown) => `error ${String(e)}`);
+    tourSummary = `tour: ${(["full", "edge", "peek", "hidden"] as const).map(per).join(" · ")} · button down: ${button}`;
     openSettings(true);
   }
 }

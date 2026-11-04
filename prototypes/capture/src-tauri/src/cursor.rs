@@ -74,6 +74,17 @@ unsafe extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGDisplayBounds(display: u32) -> CGRect;
     fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+    fn CGEventSourceButtonState(state: i32, button: u32) -> bool;
+}
+
+/// kCGEventSourceStateCombinedSessionState: every input source of this login session.
+const COMBINED_SESSION_STATE: i32 = 0;
+/// kCGMouseButtonLeft: the primary button (a trackpad click counts as it).
+const LEFT_BUTTON: u32 = 0;
+
+/// Whether the primary mouse button is held down now, wherever the pointer is and whichever app is in front.
+pub fn left_button_down() -> bool {
+    unsafe { CGEventSourceButtonState(COMBINED_SESSION_STATE, LEFT_BUTTON) }
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
