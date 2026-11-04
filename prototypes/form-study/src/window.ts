@@ -3,7 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Application } from "pixi.js";
-import { fastForward } from "./clock";
+import { fastForward, hourParam, runningClock } from "./clock";
 import { CITY } from "./config";
 import { parseJsonl, type TouchRecord } from "./data";
 import { Feeder, liveTime } from "./drive";
@@ -80,8 +80,11 @@ async function boot() {
   const sims: Sim[] = [city];
   // Holding T fast-forwards the sky through a day (a preview; the city itself keeps the real time).
   let heldSince: number | null = null;
-  const skyClock = () => new Date(Date.now() + (heldSince === null ? 0 : fastForward(performance.now() - heldSince)));
-  const cityView = new CityView3D(city, PANEL_W, PANEL_H, skyClock, () => new Date());
+  // Dev only: a window opened as `window.html?hour=8.25` (a `--config` override of the window's url in `tauri dev`) starts
+  // the day at that hour and runs on from it, for measuring the morning rush at midday. The app's own url has no query.
+  const live = runningClock(hourParam(location.search));
+  const skyClock = () => new Date(live().getTime() + (heldSince === null ? 0 : fastForward(performance.now() - heldSince)));
+  const cityView = new CityView3D(city, PANEL_W, PANEL_H, skyClock, live);
   await cityView.load();
   cityView.attachZoom();
   const heatView = new HeatView(heat, fingers);
@@ -102,7 +105,10 @@ async function boot() {
   // Listen before reading the day files so touches made meanwhile are kept.
   const queued: TouchRecord[] = [];
   let ready = false;
+  // Dev only: `window.html?quiet=1` leaves out the touches of the real pointer, so the roller stays parked whoever is at the Mac.
+  const quiet = new URLSearchParams(location.search).has("quiet");
   await listen<TouchRecord[]>("touches", (event) => {
+    if (quiet) return;
     for (const r of event.payload) {
       if (ready) take(r);
       else queued.push(r);
@@ -121,6 +127,21 @@ async function boot() {
   const lastInFile = Math.max(lastT(days), lastT(today));
   for (const r of queued.splice(0)) if (r.t > lastInFile) take(r);
   ready = true;
+
+  // Dev only: `window.html?drive=1` has the roller driven round a small square (six cells a side) by touches made up here
+  // (the real pointer is not touched, nothing is recorded), for measuring a window in use without a hand on the mouse.
+  if (new URLSearchParams(location.search).has("drive")) {
+    const legs = [[1, 0], [0, 1], [-1, 0], [0, -1]] as const;
+    const began = Date.now();
+    let [x, y] = [400, 300];
+    feeder.push({ t: liveTime(began), id: 0, x, y, state: "down" });
+    setInterval(() => {
+      const [dx, dy] = legs[Math.floor((Date.now() - began) / 6000) % legs.length];
+      x += dx * 15;
+      y += dy * 15;
+      feeder.push({ t: liveTime(Date.now()), id: 0, x, y, state: "move" });
+    }, 50);
+  }
 
   let active = savedTab();
   let heatSig = "";

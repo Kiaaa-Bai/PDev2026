@@ -5,7 +5,7 @@ import { cellKey, type CitySim } from "../sims/city";
 import { COLORMAPS, colormapRedirect, kitOf, shareOne } from "./colormaps";
 import { AMBIENT_DAY, sameSky, SKY_DAY, skyAt, type SkyState, SUN_COLOUR_DAY, SUN_DAY, WINDOW_LIT } from "./looks";
 import { type NightUniform, patchAsphalt, patchPalette, patchWindows, readTexel, ROOF_TEXEL } from "./palette-shader";
-import { Traffic, trafficRadius } from "./traffic";
+import { FaultOnce, Traffic, trafficRadius } from "./traffic";
 import {
   clampHalfHeight,
   easeHalfHeight,
@@ -87,8 +87,12 @@ const ZOOM_HOLD_MS = 5000;
 const PIXEL_RATIO = 2;
 /** The roller, the zoom and the sky draw up to this often... */
 const MAX_FPS = 30;
-/** ... but when only the traffic moves (people and cars, which are small and slow) 15 frames a second is enough. */
-const TRAFFIC_FPS = 15;
+/**
+ * ... but when only the traffic moves (people and cars, which are small and slow) 10 frames a second is enough, and it is not
+ * looked at more often even while the roller drives. (It was 15: with traffic running that came out over the 15% cost
+ * ceiling in the real window, and 10 under it: the first step of the spec's cut order that applies.)
+ */
+const TRAFFIC_FPS = 10;
 /** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
 const ELEVATION = Math.PI / 6;
 const CAMERA_DISTANCE = 50;
@@ -152,10 +156,13 @@ export class CityView3D {
   private lastMove = "";
   private stale = true;
   private lastRender = -Infinity;
-  /** When the traffic was last asked, so that with nothing drawn it is looked at TRAFFIC_FPS times a second, not on every frame. */
+  /** When the traffic was last asked: it is looked at TRAFFIC_FPS times a second, not on every frame. */
   private lastTraffic = -Infinity;
-  /** Whether the last look at the traffic threw, so that a fault that keeps coming is said once, not at 15 frames a second. */
-  private trafficFailed = false;
+  /** The traffic's faults, so that one that keeps coming is said once, not at every look, and another one is said when it comes. */
+  private trafficFault = new FaultOnce();
+  /** What the HUD line was last made of, and the number of houses it counted (at most once a second: counting runs through every lot). */
+  private statLast = { road: -1, houses: -1, cars: -1, people: -1, parked: false, text: "" };
+  private housesAt = { version: -1, second: -1, lots: -1, n: 0 };
 
   /**
    * `clock` tells the time of day the sky follows; it is a parameter so a test or the dev page can show another hour.
@@ -370,11 +377,35 @@ export class CityView3D {
     return this.traffic ? this.traffic.info() : null;
   }
 
+  /**
+   * The HUD line, which the window asks for at every frame: it is made again only when something in it differs, and the
+   * houses are counted at most once a second (or when the city changes), not at every frame.
+   */
   stat(): string {
-    const parked = this.sim.parked() ? " · parked" : "";
+    const sim = this.sim;
+    const t = sim.time();
+    const h = this.housesAt;
+    const second = Math.floor(t / 1000);
+    if (h.version !== sim.version || h.second !== second || h.lots !== sim.lots.size) {
+      h.version = sim.version;
+      h.second = second;
+      h.lots = sim.lots.size;
+      h.n = sim.houses(t);
+    }
+    const parked = sim.parked();
     const { cars, people } = this.traffic ? this.traffic.drawn() : { cars: 0, people: 0 };
+    const s = this.statLast;
+    if (s.road === sim.road.size && s.houses === h.n && s.cars === cars && s.people === people && s.parked === parked) return s.text;
     const out = cars + people > 0 ? ` · ${people} people · ${cars} cars` : "";
-    return `${this.sim.road.size.toLocaleString()} road tiles · ${this.sim.houses(this.sim.time()).toLocaleString()} houses${out}${parked}`;
+    Object.assign(s, {
+      road: sim.road.size,
+      houses: h.n,
+      cars,
+      people,
+      parked,
+      text: `${sim.road.size.toLocaleString()} road tiles · ${h.n.toLocaleString()} houses${out}${parked ? " · parked" : ""}`,
+    });
+    return s.text;
   }
 
   /**
@@ -457,17 +488,17 @@ export class CityView3D {
       this.builtFor = cellSig;
       if (this.rebuild(t, radius)) changed = true;
     }
-    // The traffic is asked when a frame is due anyway, or when its own slower slot has come; it reports whether
+    // The traffic is asked TRAFFIC_FPS times a second, whether or not the roller moves (people and cars are small and slow:
+    // asking at every frame of a driving roller would cost twice as much for nothing anybody sees); it reports whether
     // anybody moved or came or went. Its heavy work is in tasks of its own: this only draws what they found.
-    if (changed || now - this.lastTraffic >= 1000 / TRAFFIC_FPS) {
+    if (now - this.lastTraffic >= 1000 / TRAFFIC_FPS) {
       this.lastTraffic = now;
       try {
         if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
-        this.trafficFailed = false;
+        this.trafficFault.ok();
       } catch (e) {
-        // a fault in the traffic must not stop the city drawing: say so once, carry on without it
-        if (!this.trafficFailed) console.error("the traffic failed; the city goes on without it", e);
-        this.trafficFailed = true;
+        // a fault in the traffic must not stop the city drawing: say it once (and again if it is another one), carry on without it
+        if (this.trafficFault.fail(e)) console.error("the traffic failed; the city goes on without it", e);
       }
     }
     if (!changed) return false;

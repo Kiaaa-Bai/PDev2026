@@ -238,6 +238,9 @@ export const STROLL_SHARE = 0.5;
  * errand (as standing outside or strolling round it) and each idle stroll, the ones that overlap the window. A trip,
  * and the stay at the end of an errand's trip out, count only when `pathOf` knows a way: nobody who could not get there
  * is drawn there. `pending` is true when `pathOf` did not know yet for some trip; the entries are then missing that one.
+ * `wake` is the moment after `to` when one more entry of theirs would begin (a trip departs, a stroll starts, the errand
+ * a trip under way is for is reached), or Infinity when none does that day: before it, a later look at the same view
+ * would find nothing new from this person.
  */
 export function entriesFor(
   person: Person,
@@ -246,9 +249,10 @@ export function entriesFor(
   to: number,
   seed: number,
   pathOf: PathOf,
-): { entries: Entry[]; pending: boolean } {
+): { entries: Entry[]; pending: boolean; wake: number } {
   const entries: Entry[] = [];
   let pending = false;
+  let wake = Infinity;
   const { trips } = plan;
   const who = person.id;
   for (let k = 0; k < trips.length; k++) {
@@ -256,6 +260,7 @@ export function entriesFor(
     const next = k + 1 < trips.length ? trips[k + 1] : null;
     const underWay = trip.depart <= to && trip.depart + MAX_TRANSIT_MS > from;
     const stay = trip.purpose === "errand" && next !== null && trip.depart <= to && next.depart > from;
+    if (trip.depart > to && trip.depart < wake) wake = trip.depart;
     if (!underWay && !stay) continue;
     const path = pathOf(trip.from, trip.to);
     if (path === undefined) {
@@ -265,6 +270,7 @@ export function entriesFor(
     if (path === null) continue; // no way: the trip is never made
     const { walking, speed } = travelOf(path);
     const arrive = trip.depart + ((path.length - 1) / speed) * 1000;
+    if (stay && next !== null && arrive >= to && arrive < next.depart && arrive < wake) wake = arrive; // the stay at the errand begins after the window
     if (underWay && path.length > 1 && arrive > from) {
       entries.push({ type: "move", who, path, depart: trip.depart, speed, mode: walking ? "walk" : "car", from: trip.depart, until: arrive });
     }
@@ -281,8 +287,9 @@ export function entriesFor(
   }
   for (const stroll of plan.strolls) {
     if (stroll.start <= to && stroll.end > from) entries.push({ type: "stroll", who, stroll, from: stroll.start, until: stroll.end });
+    else if (stroll.start > to && stroll.start < wake) wake = stroll.start;
   }
-  return { entries, pending };
+  return { entries, pending, wake };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -306,8 +313,12 @@ const FLEET_DEPART_SPREAD = 0.5;
  */
 const FLEET_MAX_TRIP_MS = FLEET_SLOT_MS * (1 - FLEET_DEPART_SPREAD);
 export const FLEET_MAX_CELLS = (FLEET_MAX_TRIP_MS / 1000) * DRIVE_SPEED;
-/** Its stops are workplaces this many cells away (by grid distance), at least and at most: far enough to be seen driving. */
-export const FLEET_REACH = [12, 48] as const;
+/**
+ * Its stops are workplaces this many cells away (by grid distance), at least and at most: far enough to be seen driving,
+ * and no further than it can drive (a way is never shorter than the grid distance, so a stop beyond `FLEET_MAX_CELLS`
+ * could never be driven to, and looking for it would only make a bigger search for nothing).
+ */
+export const FLEET_REACH = [12, FLEET_MAX_CELLS] as const;
 const FLEET_STOPS = 6;
 /** A workplace keeps at most this many vehicles (their ids are numbered from 0 within the lot). */
 const FLEET_PER_DEPOT_MAX = 7;
@@ -375,6 +386,19 @@ export function fleetActivity(t: number): number {
   if (h < 7) return FLEET_NIGHT + ((h - 5) / 2) * (FLEET_DAY - FLEET_NIGHT);
   if (h < 19) return FLEET_DAY;
   return FLEET_DAY - ((h - 19) / 3) * (FLEET_DAY - FLEET_NIGHT);
+}
+
+/**
+ * The moment after `to` (ms) when a fleet trip may next depart: `to` itself while the fleet is out, else the start of the
+ * first slot with any activity, within the next 24 hours (Infinity when there is none). A trip departs in the first
+ * half of a slot whose start has some activity, so none departs before the slot does.
+ */
+export function fleetWakeAt(to: number): number {
+  const first = Math.floor(to / FLEET_SLOT_MS) * FLEET_SLOT_MS;
+  for (let start = first; start <= first + 24 * 3_600_000; start += FLEET_SLOT_MS) {
+    if (fleetActivity(start) > 0) return Math.max(start, to);
+  }
+  return Infinity;
 }
 
 /**

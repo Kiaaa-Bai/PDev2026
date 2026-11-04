@@ -9,6 +9,7 @@ import {
   FLEET_SLOT_MS,
   fleetActivity,
   fleetEntries,
+  fleetWakeAt,
   idleStrolls,
   MAX_TRANSIT_MS,
   planFor,
@@ -366,6 +367,38 @@ describe("entriesFor", () => {
     expect(asked).toEqual([]);
   });
 
+  it("says when something of theirs next begins after the window: the first trip or stroll that starts later", () => {
+    const { p, plan } = commuter();
+    const after = (to: number) => Math.min(...plan.trips.filter((t) => t.depart > to).map((t) => t.depart), ...plan.strolls.filter((s) => s.start > to).map((s) => s.start));
+    for (const t of [at(3, 0), at(6, 0), at(9, 30), at(14, 15), at(19, 40)]) {
+      const r = entriesFor(p, plan, t, t + 4000, SEED, find);
+      expect(r.pending).toBe(false);
+      expect(r.wake, `at ${new Date(t).toTimeString()}`).toBe(after(t + 4000));
+    }
+  });
+
+  it("wakes at the errand's place for a trip out that is still under way at the window's end", () => {
+    const { p, plan } = commuter();
+    const k = plan.trips.findIndex((t) => t.purpose === "errand");
+    const [out, back] = [plan.trips[k], plan.trips[k + 1]];
+    const path = roadPath(street, out.from, out.to)!;
+    const { speed } = travelOf(path);
+    const arrive = out.depart + ((path.length - 1) / speed) * 1000;
+    expect(arrive).toBeGreaterThan(out.depart + 1000);
+    expect(arrive).toBeLessThan(back.depart);
+    const r = entriesFor(p, plan, out.depart, out.depart + 1000, SEED, find);
+    expect(r.wake).toBeLessThanOrEqual(arrive);
+    // once there, the next thing is the way back, or a stroll, or the day's next trip
+    const there = entriesFor(p, plan, arrive + 1000, arrive + 5000, SEED, find);
+    expect(there.wake).toBeGreaterThan(arrive + 5000);
+  });
+
+  it("has no wake when nothing of theirs begins later (no plan of any day left), and does not guess for a trip it does not know the way of", () => {
+    const p: Person = { id: 1, home, work: null };
+    const nothing = { trips: [], strolls: [] };
+    expect(entriesFor(p, nothing, at(3, 0), at(3, 0) + 4000, SEED, find).wake).toBe(Infinity);
+  });
+
   it("shows a stroll for the whole of it, and none outside it", () => {
     const { p, plan } = commuter();
     const s = plan.strolls[0];
@@ -457,6 +490,55 @@ describe("the service fleet", () => {
     expect(buildFleet([wp([0, 0], 30)], SEED)).toEqual([]);
     expect(buildFleet([wp([0, 0], 30), wp([3, 3], 30), wp([4, 0], 30)], SEED)).toEqual([]);
     expect(buildFleet([], SEED)).toEqual([]);
+  });
+
+  it("looks no further for a stop than a vehicle can drive: a workplace only a long way off is no stop at all", () => {
+    expect(FLEET_REACH[1]).toBe(FLEET_MAX_CELLS); // 40: the way is never shorter than the grid distance
+    expect(buildFleet([wp([0, 0], 30), wp([FLEET_MAX_CELLS, 0], 30)], SEED).length).toBeGreaterThan(0); // just in reach
+    expect(buildFleet([wp([0, 0], 30), wp([FLEET_MAX_CELLS + 1, 0], 30), wp([0, FLEET_MAX_CELLS + 4], 30)], SEED)).toEqual([]);
+    // so no stop of a fleet in a spread-out city is further than a trip may be
+    const sparse: Workplace[] = [];
+    for (let x = 0; x < 12; x++) for (let y = 0; y < 12; y++) sparse.push(wp([x * 9, y * 9]));
+    const fleet = buildFleet(sparse, SEED);
+    expect(fleet.length).toBeGreaterThan(0);
+    for (const v of fleet) for (const stop of v.stops) expect(dist(v.depot, stop)).toBeLessThanOrEqual(FLEET_MAX_CELLS);
+  });
+
+  describe("fleetWakeAt", () => {
+    it("is the moment itself while the fleet is out", () => {
+      for (const h of [7, 10, 13, 17, 18.5, 20]) {
+        const t = at(Math.floor(h), Math.round((h % 1) * 60), 7);
+        expect(fleetWakeAt(t), `at ${h}`).toBe(t);
+      }
+    });
+
+    it("is the first slot of the morning after a night with the fleet off, whichever hour of the night it is asked", () => {
+      const first = fleetWakeAt(at(2, 0));
+      expect(fleetActivity(first)).toBeGreaterThan(0);
+      expect(first).toBeGreaterThanOrEqual(at(5, 0));
+      expect(first).toBeLessThanOrEqual(at(5, 1)); // (the activity follows the minute)
+      expect(fleetActivity(first - FLEET_SLOT_MS)).toBe(0); // nothing earlier
+      for (const t of [at(22, 30), at(23, 59, 59), at(0, 0), at(3, 33), at(4, 59, 59)]) {
+        const w = fleetWakeAt(t);
+        expect(w).toBeGreaterThanOrEqual(t);
+        expect(w % FLEET_SLOT_MS, `at ${new Date(t).toTimeString()}`).toBe(0);
+        expect(fleetActivity(w)).toBeGreaterThan(0);
+      }
+      expect(fleetWakeAt(at(23, 0))).toBeGreaterThan(at(23, 0) + 5 * 3_600_000); // the next morning, not tonight
+    });
+
+    it("is never later than a fleet trip: none departs between the moment asked and the wake", () => {
+      const fleet = buildFleet(grid, SEED);
+      const road: PathOf = line(11);
+      for (const t of [at(21, 50), at(22, 0, 5), at(23, 0), at(3, 0), at(4, 59, 30)]) {
+        const w = fleetWakeAt(t);
+        const stop = Math.min(w, t + 3_600_000);
+        for (let from = t; from < stop; from += FLEET_SLOT_MS) {
+          const { entries } = fleetEntries(fleet, from, from + FLEET_SLOT_MS, SEED, road, () => true);
+          for (const e of entries) expect(e.depart <= t || e.depart >= w, `at ${new Date(from).toTimeString()}`).toBe(true);
+        }
+      }
+    });
   });
 
   describe("in a city", () => {

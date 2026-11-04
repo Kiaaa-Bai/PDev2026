@@ -10,6 +10,7 @@ import {
   entriesFor,
   FLEET_REACH,
   fleetEntries,
+  fleetWakeAt,
   planFor,
   strollLeg,
   STROLL_LEG_MS,
@@ -261,15 +262,41 @@ export class PathCache {
   }
 }
 
+/**
+ * A fault that keeps coming is said once, not at every frame: `fail` tells whether this one is worth saying (its message
+ * is not the one just before), `ok` forgets the last, so that the same fault coming back after a good look is said again.
+ */
+export class FaultOnce {
+  private last: string | null = null;
+
+  fail(e: unknown): boolean {
+    const message = e instanceof Error ? e.message : String(e);
+    if (message === this.last) return false;
+    this.last = message;
+    return true;
+  }
+
+  ok(): void {
+    this.last = null;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // the view
 
-/** A roster is made again when it is this old, ms of the clock... */
+/** A roster is made again when it is this old, ms of the clock (unless nobody is out: see MAX_SLEEP_MS)... */
 const REFRESH_MS = 1500;
 /** ... when the camera has moved this many cells ... */
 const MOVE_CELLS = 5;
 /** The roster covers this far ahead of its moment, so a trip that departs between two refreshes is there on time. */
 const HORIZON_MS = 4000;
+/**
+ * A roster with nobody in it is not made again until the first departure of the people and vehicles that could be seen
+ * is this close (its horizon, less a second for the work to be done in time): a parked city at night then costs nothing.
+ */
+const WAKE_LEAD_MS = HORIZON_MS - 1000;
+/** ... and a sleeping roster is made again at the latest after this long, so a city that has grown meanwhile is looked at. */
+const MAX_SLEEP_MS = 60_000;
 /** People are considered when their home or work is within the view plus this many cells, and kept when something of theirs is within the view plus the second. */
 const CANDIDATE_MARGIN = 24;
 const KEEP_MARGIN = 12;
@@ -277,12 +304,20 @@ const KEEP_MARGIN = 12;
 const TAIL_UNTIL_MS = 90 * 60_000;
 /**
  * Who lives where is rebuilt after the city changes, not more often than this, and not more often than keeps the
- * rebuilding under one part in REBUILD_DUTY of the time (a big city takes 100 ms: it waits ten seconds). A grown house is
- * looked for this often.
+ * rebuilding under one part in REBUILD_DUTY of the time (a big city takes 100 ms: it waits ten seconds). The city is
+ * looked at for changes (a house built or grown into a bigger one, a shop or office more) this often.
  */
 const MIN_REBUILD_MS = 6000;
 const REBUILD_DUTY = 100;
 const TIER_CHECK_MS = 5000;
+/**
+ * While the roller drives the city changes every moment, and in a big city rebuilding for each house would take a hundred
+ * milliseconds out of a frame every few seconds for nothing anybody sees: there it waits until the people and jobs have
+ * changed by this share of the people, and otherwise for the roller to park. A city that builds in less than CHEAP_BUILD_MS
+ * (a young one, where every new house is news) is rebuilt as soon as it changes.
+ */
+const STALE_SHARE = 0.03;
+const CHEAP_BUILD_MS = 20;
 /** A slice of background work. */
 const SLICE_MS = 5;
 /** After the background work throws, it is tried again no sooner than this. */
@@ -303,6 +338,8 @@ interface Roster {
   day: number;
   centre: readonly [number, number];
   radius: number;
+  /** Not made again before this moment, unless the view or the day changes: `at` and REFRESH_MS, or later when nobody is out. */
+  wake: number;
   moves: Move[];
   walks: Walk[];
   stands: StandSpot[];
@@ -317,6 +354,8 @@ interface Job {
   tail: boolean;
   centre: readonly [number, number];
   radius: number;
+  /** The soonest that anybody of the list begins something more, past the roster's horizon (Infinity: nobody does). */
+  wake: number;
   moves: Move[];
   walks: Walk[];
   stands: StandSpot[];
@@ -368,7 +407,9 @@ export class Traffic {
   private roster: Roster | null = null;
 
   private pop: Population | null = null;
-  private popVersion = -1;
+  /** The city's jobs when the population was built, which `sim.demand()` counts the way `jobsOf` does, and how long it took (ms). */
+  private popJobs = 0;
+  private popCost = 0;
   private popBuiltAt = -Infinity;
   private popGap = MIN_REBUILD_MS;
   private tierCheckedAt = -Infinity;
@@ -445,6 +486,7 @@ export class Traffic {
     if (this.sim !== sim) this.reset(sim);
     this.t = t;
     this.want = { centre, radius };
+    if (this.retryAt - t > RETRY_MS) this.retryAt = t + RETRY_MS; // the clock went back since the failure: wait a pause from now, not until it catches up
     if (!this.scheduled && t >= this.retryAt && this.due(t, centre, radius)) {
       this.scheduled = true;
       this.later(this.work);
@@ -456,7 +498,6 @@ export class Traffic {
   private reset(sim: CitySim): void {
     this.sim = sim;
     this.pop = null;
-    this.popVersion = -1;
     this.popBuiltAt = -Infinity;
     this.tierCheckedAt = -Infinity;
     this.plans.clear();
@@ -467,11 +508,11 @@ export class Traffic {
     this.retryAt = -Infinity;
   }
 
-  /** Whether the roster is missing, old, made for another day, or for a view the camera has left. */
+  /** Whether the roster is missing, past its wake (old, or the time of the next departure is near), made for another day, or for a view the camera has left. */
   private due(t: number, centre: readonly [number, number], radius: number): boolean {
     const r = this.roster;
     if (!r) return true;
-    if (t - r.at >= REFRESH_MS || t < r.at) return true;
+    if (t >= r.wake || t < r.at) return true;
     if (Math.max(Math.abs(centre[0] - r.centre[0]), Math.abs(centre[1] - r.centre[1])) >= MOVE_CELLS) return true;
     return radius > r.radius || dayStartOf(t) !== r.day;
   }
@@ -510,21 +551,25 @@ export class Traffic {
     }
   };
 
-  /** Builds who lives and works where the first time, then again after the city changes or houses grow, and not more often than every few seconds. */
+  /**
+   * Builds who lives and works where the first time, then again after the city has changed, and not more often than every
+   * few seconds. A change that does not touch the people (the roads, a park) rebuilds nothing; one that does, in a city
+   * that takes long to build, waits for the roller to park, or, while it drives, for the change to be a good share of the
+   * city (STALE_SHARE).
+   */
   private refreshPopulation(sim: CitySim, t: number): void {
     if (this.pop) {
-      if (t - this.popBuiltAt < this.popGap) return;
-      if (sim.version === this.popVersion) {
-        // only a house growing into a bigger one can have changed it
-        if (t - this.tierCheckedAt < TIER_CHECK_MS) return;
-        this.tierCheckedAt = t;
-        if (residentsOf(sim, sim.time()).length === this.pop.people.length) return;
-      }
+      if (t - this.popBuiltAt < this.popGap || t - this.tierCheckedAt < TIER_CHECK_MS) return;
+      this.tierCheckedAt = t;
+      const change = Math.abs(residentsOf(sim, sim.time()).length - this.pop.people.length) + Math.abs(sim.demand().jobs - this.popJobs);
+      if (change === 0) return;
+      if (!sim.parked() && this.popCost >= CHEAP_BUILD_MS && change < STALE_SHARE * this.pop.people.length) return;
     }
     const began = this.perf();
     this.pop = buildPopulation(sim, sim.time(), sim.cfg.seed);
-    this.popGap = Math.max(MIN_REBUILD_MS, REBUILD_DUTY * (this.perf() - began));
-    this.popVersion = sim.version;
+    this.popCost = this.perf() - began;
+    this.popGap = Math.max(MIN_REBUILD_MS, REBUILD_DUTY * this.popCost);
+    this.popJobs = sim.demand().jobs;
     this.popBuiltAt = t;
     this.tierCheckedAt = t;
     this.builds++;
@@ -545,7 +590,7 @@ export class Traffic {
     const list = this.pop!.people.filter((p) => near(p.home) || (p.work !== null && near(p.work)));
     const far = radius + KEEP_MARGIN + FLEET_REACH[1];
     const vehicles = this.pop!.fleet.filter((v) => Math.abs(v.depot[0] - centre[0]) <= far && Math.abs(v.depot[1] - centre[1]) <= far);
-    return { list, i: 0, vehicles, v: 0, t0: t, day, tail, centre, radius, moves: [], walks: [], stands: [] };
+    return { list, i: 0, vehicles, v: 0, t0: t, day, tail, centre, radius, wake: Infinity, moves: [], walks: [], stands: [] };
   }
 
   /**
@@ -568,6 +613,7 @@ export class Traffic {
       const found = entriesFor(person, plan, job.t0, job.t0 + HORIZON_MS, seed, pathOf);
       if (found.pending) return; // out of time to look for a way: this person again in the next slice
       for (const e of found.entries) this.keepEntry(e, job, seed, isRoad, within);
+      if (found.wake < job.wake) job.wake = found.wake;
       job.i++;
       first = false;
     }
@@ -608,7 +654,13 @@ export class Traffic {
       list.sort((a, b) => unit(seed, a.who, 33) - unit(seed, b.who, 33) || a.who - b.who);
       stands.push(...list.slice(0, PER_PLACE));
     }
-    return { at: job.t0, day: job.day, centre: job.centre, radius: job.radius, moves: job.moves, walks: job.walks, stands };
+    // Nobody out: the roster stays empty until somebody sets off, so there is no need to look again before then
+    let wake = job.t0 + REFRESH_MS;
+    if (job.moves.length === 0 && job.walks.length === 0 && stands.length === 0) {
+      const soonest = Math.min(job.wake, job.vehicles.length > 0 ? fleetWakeAt(job.t0 + HORIZON_MS) : Infinity);
+      wake = Math.min(Math.max(wake, soonest - WAKE_LEAD_MS), job.t0 + MAX_SLEEP_MS);
+    }
+    return { at: job.t0, day: job.day, centre: job.centre, radius: job.radius, wake, moves: job.moves, walks: job.walks, stands };
   }
 
   // ---- the frame ----
@@ -690,12 +742,12 @@ export class Traffic {
 
     this.carMeshes.forEach((mesh, k) => {
       mesh.count = perModel[k];
-      mesh.instanceMatrix.needsUpdate = true;
+      uploadUsed(mesh.instanceMatrix, perModel[k] * 16);
     });
     this.bodies.count = this.heads.count = people;
-    this.bodies.instanceMatrix.needsUpdate = true;
-    if (this.bodies.instanceColor) this.bodies.instanceColor.needsUpdate = true;
-    if (this.heads.instanceColor) this.heads.instanceColor.needsUpdate = true;
+    uploadUsed(this.bodies.instanceMatrix, people * 16); // the heads share it
+    if (this.bodies.instanceColor) uploadUsed(this.bodies.instanceColor, people * 3);
+    if (this.heads.instanceColor) uploadUsed(this.heads.instanceColor, people * 3);
     this.drawnCars = perModel.reduce((a, b) => a + b, 0);
     this.drawnPeople = people;
     this.drawnStanding = stands.length;
@@ -710,6 +762,18 @@ export class Traffic {
     this.sig = "0/0";
     return true;
   }
+}
+
+/**
+ * Has the renderer upload only the first `n` numbers of an instance attribute the next time it draws: the instances in
+ * use, not the whole capacity (a couple of hundred kilobytes for the cars and people, where a few kilobytes are in use).
+ * Nothing is uploaded for none.
+ */
+function uploadUsed(attribute: THREE.BufferAttribute, n: number): void {
+  attribute.clearUpdateRanges();
+  if (n === 0) return;
+  attribute.addUpdateRange(0, n);
+  attribute.needsUpdate = true;
 }
 
 /** A person: a body from the waist up to the shoulders (6-sided, a little wider at the bottom), and a head, 0.3 tall together at scale 1. */

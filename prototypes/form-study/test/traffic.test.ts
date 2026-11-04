@@ -5,6 +5,7 @@ import {
   CAR_LANE,
   CAR_POOL,
   carModelFor,
+  FaultOnce,
   KERB,
   laneOffset,
   MAX_CARS,
@@ -335,6 +336,22 @@ describe("the car models", () => {
     expect(CAR_POOL).toHaveLength(7);
     for (const m of CAR_POOL) expect(MODEL_NAMES).toContain(m);
     expect(new Set(MODEL_NAMES).size).toBe(MODEL_NAMES.length);
+  });
+});
+
+describe("FaultOnce", () => {
+  it("says a fault once, again when the message changes, and again after the fault went away", () => {
+    const f = new FaultOnce();
+    expect(f.fail(new Error("a"))).toBe(true);
+    expect(f.fail(new Error("a"))).toBe(false);
+    expect(f.fail(new Error("a"))).toBe(false);
+    expect(f.fail(new Error("b"))).toBe(true); // a different fault is news
+    expect(f.fail(new Error("b"))).toBe(false);
+    expect(f.fail(new Error("a"))).toBe(true); // and so is the first one coming back
+    f.ok();
+    expect(f.fail(new Error("a"))).toBe(true); // it went away in between
+    expect(f.fail("not an Error")).toBe(true);
+    expect(f.fail("not an Error")).toBe(false);
   });
 });
 
@@ -727,6 +744,237 @@ describe("Traffic", () => {
     expect(traffic.drawn().people).toBeGreaterThan(0);
   });
 
+  describe("a quiet roster", () => {
+    /**
+     * The first look (a look every `step` ms, from `from` up to `to`) at which anything is drawn, for a view the camera
+     * holds still or jiggles (which makes every look a fresh one). The work asked for at one look is done at the next:
+     * a task takes a moment to get its turn.
+     */
+    function firstSeen(sim: CitySim, from: number, to: number, jiggle: boolean, step = 1000) {
+      const { traffic, flush } = make();
+      for (let t = from; t < to; t += step) {
+        flush();
+        const centre: [number, number] = jiggle && Math.floor((t - from) / step) % 2 === 1 ? [30, 0] : [20, 0];
+        traffic.update(sim, new Date(t), centre, 45);
+        const d = traffic.drawn();
+        if (d.cars + d.people > 0) return t;
+      }
+      return Infinity;
+    }
+
+    it("is not made again every 1.5 s while nobody is out: a parked night city is looked at about once a minute", () => {
+      const sim = town();
+      const { traffic, queue, flush } = make();
+      let jobs = 0;
+      for (let s = 0; s < 20 * 60; s++) { // 03:00 to 03:20, a look every second
+        traffic.update(sim, new Date(at(3, 0, 0) + s * 1000), [20, 0], 30);
+        if (queue.length > 0) jobs++;
+        flush();
+      }
+      expect(jobs).toBeGreaterThanOrEqual(15); // it does look again: the night is not forgotten
+      expect(jobs).toBeLessThan(25); // 800 when it looked every 1.5 s
+    });
+
+    it("stays asleep for as long as the view and the day hold, however often it is asked", () => {
+      const sim = town();
+      const { traffic, queue, flush } = make();
+      traffic.update(sim, new Date(at(3, 0, 0)), [20, 0], 30);
+      flush();
+      for (let ms = 0; ms < 20_000; ms += 100) {
+        traffic.update(sim, new Date(at(3, 0, 0) + 100 + ms), [20, 0], 30);
+        expect(queue.length, `after ${ms} ms`).toBe(0);
+      }
+    });
+
+    it("wakes at once when the camera moves a few cells or the view widens", () => {
+      const sim = town();
+      const { traffic, queue, flush } = make();
+      const t = at(3, 0, 0);
+      traffic.update(sim, new Date(t), [20, 0], 30);
+      flush();
+      traffic.update(sim, new Date(t + 5000), [24, 0], 30);
+      expect(queue.length).toBe(0); // a few cells: the roster still covers it
+      traffic.update(sim, new Date(t + 5000), [26, 0], 30);
+      expect(queue.length).toBe(1);
+      flush();
+      traffic.update(sim, new Date(t + 6000), [26, 0], 40);
+      expect(queue.length).toBe(1);
+    });
+
+    it("does not sleep when somebody is out: by day it is made again every 1.5 s", () => {
+      const sim = town();
+      const { traffic, queue, flush } = make();
+      const t = at(13, 0, 0);
+      traffic.update(sim, new Date(t), [20, 0], 30);
+      flush();
+      traffic.update(sim, new Date(t + 1000), [20, 0], 30);
+      expect(queue.length).toBe(0);
+      traffic.update(sim, new Date(t + 1600), [20, 0], 30);
+      expect(queue.length).toBe(1);
+    });
+
+    it("wakes in time for the morning's first vehicle on the road: nobody is late for having slept", () => {
+      const sim = town();
+      const from = at(4, 55, 0);
+      const to = at(5, 10, 0);
+      const fresh = firstSeen(sim, from, to, true);
+      const slept = firstSeen(sim, from, to, false);
+      expect(fresh).toBeLessThan(to); // the fleet is out soon after 05:00
+      expect(fresh).toBeGreaterThan(from + 60_000);
+      expect(slept).toBeLessThanOrEqual(fresh + 500);
+    });
+
+    it("wakes in time for the first resident out in the morning, too", () => {
+      // houses only, no workplace and so no fleet: the first people out are the strollers of the morning window
+      const sim = new CitySim(cfg);
+      for (let x = 0; x <= 12; x++) sim.road.set(cellKey(x, 0), 3);
+      for (let x = 0; x <= 10; x += 2) {
+        sim.lots.set(cellKey(x, -1), 0);
+        sim.kinds.set(cellKey(x, -1), "apartment");
+      }
+      sim.version = 1;
+      const from = at(6, 55, 0);
+      const to = at(9, 0, 0);
+      const fresh = firstSeen(sim, from, to, true);
+      const slept = firstSeen(sim, from, to, false);
+      expect(fresh).toBeLessThan(to);
+      expect(fresh).toBeGreaterThan(from + 30_000);
+      expect(slept).toBeLessThanOrEqual(fresh + 500);
+    });
+
+    it("still does its work in time when the clock has run on a long way since it last looked", () => {
+      const sim = town();
+      const { traffic, flush } = make();
+      traffic.update(sim, new Date(at(3, 0, 0)), [20, 0], 30);
+      flush();
+      traffic.update(sim, new Date(at(13, 0, 0)), [20, 0], 30); // ten hours on: due, whatever it was waiting for
+      flush();
+      traffic.update(sim, new Date(at(13, 0, 0)), [20, 0], 30);
+      expect(traffic.drawn().people).toBeGreaterThan(0);
+    });
+  });
+
+  describe("rebuilding who lives and works where", () => {
+    /**
+     * A traffic on `sim` that has built its population once, at 13:00, and a way to look again later. Each look at the
+     * clock takes `cost` ms, so building the population takes about that long (a big city takes long, a small one none).
+     */
+    function built(sim: CitySim, cost = 0) {
+      const scene = new THREE.Scene();
+      const models = new Map(CAR_POOL.map((n) => [n, { geo: new THREE.BoxGeometry(1, 1, 2), mat: new THREE.MeshBasicMaterial() }]));
+      const queue: (() => void)[] = [];
+      let clock = 0;
+      const traffic = new Traffic(scene, models, { later: (fn) => queue.push(fn), perf: () => (clock += cost) });
+      const flush = () => {
+        for (let i = 0; i < 100_000 && queue.length > 0; i++) queue.shift()!();
+      };
+      traffic.update(sim, new Date(at(13, 0, 0)), [20, 0], 30);
+      flush();
+      expect(traffic.populationBuilds()).toBe(1);
+      let m = 1;
+      const look = () => {
+        clock += 3_600_000; // long enough for any pause between builds
+        traffic.update(sim, new Date(at(13, m++ * 2, 0)), [20, 0], 30);
+        flush();
+      };
+      return { traffic, look };
+    }
+    const addHouses = (sim: CitySim, n: number, row = 1) => {
+      for (let i = 0; i < n; i++) {
+        sim.lots.set(cellKey(i, row), 0);
+        sim.kinds.set(cellKey(i, row), "house");
+      }
+      sim.version++;
+    };
+    /** A build that takes this long (ms) is a big city's: not to be done for every house while the roller drives. */
+    const BIG = 40;
+    /** The town with three hundred more houses, which a build that takes BIG ms might well be for. */
+    const bigTown = () => {
+      const sim = town();
+      addHouses(sim, 300, 5);
+      return sim;
+    };
+
+    it("waits while the roller drives, in a city that takes long to build: a house here and there does not rebuild it", () => {
+      const sim = bigTown();
+      sim.parked = () => false;
+      const t = built(sim, BIG);
+      for (let k = 0; k < 6; k++) {
+        addHouses(sim, 1, 2 + k);
+        t.look();
+      }
+      expect(t.traffic.populationBuilds()).toBe(1);
+    });
+
+    it("rebuilds a city that builds in no time for every house even while the roller drives: a young village shows its people at once", () => {
+      const sim = bigTown(); // (a city of this many people, but one that builds in no time)
+      sim.parked = () => false;
+      const t = built(sim, 0);
+      for (let k = 0; k < 3; k++) {
+        addHouses(sim, 1, 2 + k);
+        t.look();
+        expect(t.traffic.populationBuilds()).toBe(2 + k);
+      }
+    });
+
+    it("does not rebuild at all while nothing about the people has changed, whatever the version does", () => {
+      const sim = bigTown();
+      for (const parked of [true, false]) {
+        sim.parked = () => parked;
+        const t = built(sim, parked ? 0 : BIG);
+        for (let k = 0; k < 5; k++) {
+          sim.version++; // roads driven over, turns taken: no house, shop or office more or less
+          t.look();
+        }
+        expect(t.traffic.populationBuilds(), `parked ${parked}`).toBe(1);
+      }
+    });
+
+    it("rebuilds a big city even while the roller drives once the people have changed by a good share of them", () => {
+      const sim = bigTown();
+      sim.parked = () => false;
+      const t = built(sim, BIG);
+      addHouses(sim, 40, 7); // two residents each, on about seven hundred: more than three in a hundred
+      t.look();
+      expect(t.traffic.populationBuilds()).toBe(2);
+    });
+
+    it("rebuilds a big city once the roller has parked, for any change", () => {
+      const sim = bigTown();
+      sim.parked = () => false;
+      const t = built(sim, BIG);
+      addHouses(sim, 1);
+      t.look();
+      expect(t.traffic.populationBuilds()).toBe(1);
+      sim.parked = () => true;
+      t.look();
+      expect(t.traffic.populationBuilds()).toBe(2);
+      t.look();
+      expect(t.traffic.populationBuilds()).toBe(2); // and then not again for nothing
+    });
+  });
+
+  it("tries again after a failure when the clock has jumped back by more than the pause", () => {
+    const sim = town();
+    const { traffic, flush, queue } = make();
+    const real = sim.hasRoad.bind(sim);
+    let broken = true;
+    sim.hasRoad = (x: number, y: number) => {
+      if (broken) throw new Error("boom");
+      return real(x, y);
+    };
+    traffic.update(sim, new Date(at(13, 0, 0)), [20, 0], 30);
+    expect(() => flush()).toThrow("boom");
+    broken = false;
+    traffic.update(sim, new Date(at(12, 0, 0)), [20, 0], 30); // an hour back: the pause is not an hour
+    expect(queue.length).toBe(0);
+    traffic.update(sim, new Date(at(12, 0, 11)), [20, 0], 30);
+    expect(queue.length).toBe(1);
+    flush();
+    traffic.update(sim, new Date(at(12, 0, 11)), [20, 0], 30);
+    expect(traffic.drawn().people).toBeGreaterThan(0);
+  });
+
   describe("a brand-new city", () => {
     /** A short street from the roller's first cell with `houses` houses on its north side and no workplace. */
     function fresh(houses: number, roadCells = 8) {
@@ -822,6 +1070,31 @@ describe("Traffic", () => {
     expect(traffic.drawn()).toEqual({ cars: 0, people: 0 });
     flush();
     expect(traffic.update(empty, t, [20, 0], 30)).toBe(false);
+  });
+
+  it("hands the renderer only the instances in use, not the whole capacity, each time it draws", () => {
+    const sim = town();
+    const { traffic, scene, flush } = make();
+    const meshes = () => scene.children.filter((c): c is THREE.InstancedMesh => (c as THREE.InstancedMesh).isInstancedMesh);
+    const t0 = at(13, 0, 0);
+    traffic.update(sim, new Date(t0), [20, 0], 40);
+    flush();
+    for (let k = 0; k < 6; k++) {
+      expect(traffic.update(sim, new Date(t0 + k * 1000), [20, 0], 40)).toBe(true);
+      let drawn = 0;
+      for (const m of meshes()) {
+        if (m.count === 0) {
+          expect(m.instanceMatrix.updateRanges, "a mesh with nothing in it has nothing to upload").toEqual([]);
+          continue;
+        }
+        drawn += m.count;
+        expect(m.instanceMatrix.updateRanges).toEqual([{ start: 0, count: m.count * 16 }]); // one range, however many draws have passed
+        if (m.instanceColor) expect(m.instanceColor.updateRanges).toEqual([{ start: 0, count: m.count * 3 }]);
+      }
+      expect(drawn).toBeGreaterThan(0);
+    }
+    // far fewer than the capacity are drawn, which is the point
+    expect(meshes().reduce((n, m) => n + m.count, 0)).toBeLessThan(MAX_PEOPLE);
   });
 
   it("adds its meshes to the scene: one instanced mesh per car model and meshes for the people", () => {
