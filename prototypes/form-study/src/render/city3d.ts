@@ -85,14 +85,13 @@ const DEFAULT_HALF_HEIGHT = MIN_HALF_HEIGHT;
 /** A zoomed-out view stays out this long after the last zoom input, then eases back. */
 const ZOOM_HOLD_MS = 5000;
 const PIXEL_RATIO = 2;
-/** The roller, the zoom and the sky draw up to this often... */
-const MAX_FPS = 30;
+/** Everything (the roller, the zoom, the sky, people and cars) draws up to this often while it moves. */
+const MAX_FPS = 60;
 /**
- * ... but when only the traffic moves (people and cars, which are small and slow) 10 frames a second is enough, and it is not
- * looked at more often even while the roller drives. (It was 15: with traffic running that came out over the 15% cost
- * ceiling in the real window, and 10 under it: the first step of the spec's cut order that applies.)
+ * The shortest gap between two draws. Animation frames come at the display's rate with some jitter: three quarters of a
+ * frame lets every frame of a 60 Hz display through, and every other one of a 120 Hz display.
  */
-const TRAFFIC_FPS = 10;
+const MIN_FRAME_MS = (1000 / MAX_FPS) * 0.75;
 /** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
 const ELEVATION = Math.PI / 6;
 const CAMERA_DISTANCE = 50;
@@ -156,8 +155,8 @@ export class CityView3D {
   private lastMove = "";
   private stale = true;
   private lastRender = -Infinity;
-  /** When the traffic was last asked: it is looked at TRAFFIC_FPS times a second, not on every frame. */
-  private lastTraffic = -Infinity;
+  /** Paused (the window is a sketch, or hidden): nothing is looked at or drawn until `resume`. */
+  private paused = false;
   /** The traffic's faults, so that one that keeps coming is said once, not at every look, and another one is said when it comes. */
   private trafficFault = new FaultOnce();
   /** What the HUD line was last made of, and the number of houses it counted (at most once a second: counting runs through every lot). */
@@ -372,6 +371,17 @@ export class CityView3D {
     this.stale = true;
   }
 
+  /** Stop looking and drawing: `update` does nothing until `resume`. */
+  pause(): void {
+    this.paused = true;
+  }
+
+  /** Look and draw again, starting with one draw of how things are now. */
+  resume(): void {
+    this.paused = false;
+    this.invalidate();
+  }
+
   /** What the traffic's last pass found, for a look from the dev page's console. */
   trafficInfo(): ReturnType<Traffic["info"]> {
     return this.traffic ? this.traffic.info() : null;
@@ -465,11 +475,11 @@ export class CityView3D {
   }
 
   /**
-   * Draw if something changed, at most MAX_FPS times a second, and when only the traffic moved at most TRAFFIC_FPS.
-   * A parked city with nobody out is not drawn at all. Returns true when it drew.
+   * Draw if something changed, at most MAX_FPS times a second. A parked city with nobody out is not drawn at all, nor is
+   * a paused one. Returns true when it drew.
    */
   update(now: number): boolean {
-    if (!this.roller || now - this.lastRender < 1000 / MAX_FPS) return false;
+    if (!this.roller || this.paused || now - this.lastRender < MIN_FRAME_MS) return false;
     const t = this.sim.time();
     const at = this.sim.rollerAt();
     const move = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir}`;
@@ -488,18 +498,14 @@ export class CityView3D {
       this.builtFor = cellSig;
       if (this.rebuild(t, radius)) changed = true;
     }
-    // The traffic is asked TRAFFIC_FPS times a second, whether or not the roller moves (people and cars are small and slow:
-    // asking at every frame of a driving roller would cost twice as much for nothing anybody sees); it reports whether
-    // anybody moved or came or went. Its heavy work is in tasks of its own: this only draws what they found.
-    if (now - this.lastTraffic >= 1000 / TRAFFIC_FPS) {
-      this.lastTraffic = now;
-      try {
-        if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
-        this.trafficFault.ok();
-      } catch (e) {
-        // a fault in the traffic must not stop the city drawing: say it once (and again if it is another one), carry on without it
-        if (this.trafficFault.fail(e)) console.error("the traffic failed; the city goes on without it", e);
-      }
+    // The traffic is asked at every frame; it reports whether anybody moved or came or went. Its heavy work is in tasks
+    // of its own: this only draws what they found.
+    try {
+      if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
+      this.trafficFault.ok();
+    } catch (e) {
+      // a fault in the traffic must not stop the city drawing: say it once (and again if it is another one), carry on without it
+      if (this.trafficFault.fail(e)) console.error("the traffic failed; the city goes on without it", e);
     }
     if (!changed) return false;
     this.stale = false;
