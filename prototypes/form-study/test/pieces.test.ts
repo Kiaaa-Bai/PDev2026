@@ -890,8 +890,8 @@ describe("zoom", () => {
     });
   });
 
-  it("holds a moved view for 10 s before easing it back", () => {
-    expect(VIEW_HOLD_MS).toBe(10_000);
+  it("holds a moved view only a moment after the last drag or zoom before easing it back (Kia: 10 s was too long)", () => {
+    expect(VIEW_HOLD_MS).toBe(800);
   });
 });
 

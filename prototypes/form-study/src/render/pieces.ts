@@ -347,8 +347,11 @@ export function wheelZoomTarget(halfHeight: number, deltaY: number, deltaMode: n
 /** A zoomed-out view settles back to the close-up in this long. */
 export const EASE_BACK_MS = 600;
 
-/** A dragged or zoomed-out view stays where it was put this long after the last drag or zoom, then eases back to the roller. */
-export const VIEW_HOLD_MS = 10_000;
+/**
+ * A dragged or zoomed-out view stays where it was put this long after the hand lets go (the last drag or zoom), then
+ * eases back to the roller — a moment, not a wait (Kia, 2026-11-10: 10 s was too long). While a drag is held it stays.
+ */
+export const VIEW_HOLD_MS = 800;
 
 /** Camera: 30° above the ground (and turned 45° around), so a tile is a diamond. */
 export const ELEVATION = Math.PI / 6;

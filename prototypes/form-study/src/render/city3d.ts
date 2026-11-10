@@ -203,6 +203,8 @@ export class CityView3D {
   /** When the view was last dragged or zoomed (the clock `update` is given), and the easing back once it has begun. */
   private viewedAt = -Infinity;
   private easing: { from: number; offset: { x: number; y: number }; since: number } | null = null;
+  /** A drag of the view is held down: the view stays put, however long, until it is let go. */
+  private dragging = false;
   /** Where the roller was when last drawn, and whether something outside it needs a draw. */
   private lastMove = "";
   private stale = true;
@@ -388,7 +390,7 @@ export class CityView3D {
     this.invalidate();
   }
 
-  /** Zoom to `h` tiles (kept between 5 and 60) because of an input at `now`: it stays there for 10 s after the last drag or zoom. */
+  /** Zoom to `h` tiles (kept between 5 and 60) because of an input at `now`: it stays there a moment after the last drag or zoom. */
   zoomTo(h: number, now: number = performance.now()): void {
     h = clampHalfHeight(h);
     this.holdView(now);
@@ -397,7 +399,7 @@ export class CityView3D {
 
   /**
    * Move the view as a drag of (dx, dy) CSS pixels at `now` does: the ground under the pointer follows it. From then on
-   * the view stays on that spot, not on the roller, until it has been left alone for 10 s.
+   * the view stays on that spot, not on the roller, until it has been let go for VIEW_HOLD_MS.
    */
   panBy(dxPx: number, dyPx: number, now: number = performance.now()): void {
     const from = this.center(this.sim.rollerAt());
@@ -462,6 +464,8 @@ export class CityView3D {
     c.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || !allowed()) return;
       last = { x: e.clientX, y: e.clientY, id: e.pointerId };
+      this.dragging = true;
+      this.holdView(performance.now());
       c.setPointerCapture(e.pointerId);
       c.style.cursor = "grabbing";
     });
@@ -477,6 +481,8 @@ export class CityView3D {
     const end = (e: PointerEvent) => {
       if (!last || e.pointerId !== last.id) return;
       last = null;
+      this.dragging = false;
+      this.holdView(performance.now());
       c.style.cursor = "grab";
     };
     c.addEventListener("pointerup", end);
@@ -484,10 +490,14 @@ export class CityView3D {
   }
 
   /**
-   * Once the view has been left alone for 10 s, ease it back over 600 ms: the zoom to the close-up and the middle onto
+   * Once the view has been let go for VIEW_HOLD_MS (and is not being dragged), ease it back over 600 ms: the zoom to the close-up and the middle onto
    * the roller, together (onto where the roller is by then, as it may be driving). Returns true while the view changes.
    */
   private stepView(now: number): boolean {
+    if (this.dragging) {
+      this.viewedAt = now; // the hold starts when the drag is let go
+      return false;
+    }
     if (!this.easing) {
       if (this.halfHeight === DEFAULT_HALF_HEIGHT && !this.look) return false;
       if (now - this.viewedAt < VIEW_HOLD_MS) return false;
