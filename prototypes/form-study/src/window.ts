@@ -41,7 +41,7 @@ import { skyAt } from "./render/looks";
 import { PANEL_H, PANEL_W } from "./render/panel";
 import { drawSketch, SKETCH_RADIUS, sketchItems } from "./render/sketch";
 import { FaultOnce } from "./render/traffic";
-import { CitySim } from "./sims/city";
+import { CitySim, type CityConfig } from "./sims/city";
 import type { Sim } from "./sims/types";
 
 const TABS = ["City", "Heat"];
@@ -130,10 +130,10 @@ function iconButton(className: string, title: string, icon: string, onClick: () 
 }
 
 /** The saved city, or null when there is none, it can't be read, or its rules have changed. */
-async function loadCity(): Promise<CitySim | null> {
+async function loadCity(cfg: CityConfig): Promise<CitySim | null> {
   try {
     const text = await invoke<string>("load_snapshot");
-    return text ? CitySim.restore(CITY, JSON.parse(text)) : null;
+    return text ? CitySim.restore(cfg, JSON.parse(text)) : null;
   } catch {
     return null; // broken snapshot text counts as no snapshot
   }
@@ -162,8 +162,10 @@ async function boot() {
   const heat = new Heat(64, 40);
   const fingers = new Map<number, { x: number; y: number }>();
   // The city is the saved snapshot plus every record after it; with no snapshot, every day on disk.
-  const saved = await loadCity();
-  const city = saved ?? new CitySim(CITY);
+  // this Mac's world: its seed decides where the rivers run, made on first launch and kept in the data folder
+  const cityCfg: CityConfig = { ...CITY, worldSeed: await invoke<number>("world_seed") };
+  const saved = await loadCity(cityCfg);
+  const city = saved ?? new CitySim(cityCfg);
   const sims: Sim[] = [city];
   // Holding T fast-forwards the sky through a day (a preview; the city itself keeps the real time).
   let heldSince: number | null = null;

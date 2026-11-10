@@ -22,6 +22,7 @@ import {
   ROLLER,
   VIEW_HOLD_MS,
   viewRadius,
+  WATER,
   wheelZoomTarget,
   type Looks,
   type Placement,
@@ -228,6 +229,9 @@ export class CityView3D {
       return kit;
     };
     await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(kitFor(n), n))));
+    // a river cell: a flat square just above the ground and below the roads, tinted by its instance colour
+    const water = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, -0.005, 0);
+    this.models.set(WATER, { geo: water, mat: new THREE.MeshLambertMaterial({ color: 0xffffff }), map: null });
     this.patchMaterials();
     const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
@@ -528,6 +532,7 @@ export class CityView3D {
       built: (x, y) => this.sim.lots.get(cellKey(x, y)) ?? 0,
       kind: (x, y) => this.sim.lotForm(x, y),
       grade: (x, y) => this.sim.gradeAt(x, y),
+      water: (x, y) => this.sim.isWater(x, y),
     };
     const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), radius, looks);
     this.builtRadius = radius;

@@ -3,7 +3,7 @@ import type { FarmConfig } from "./sims/farm";
 import type { MonsterConfig } from "./sims/monster";
 
 /** Bump when the city's rules change, so an old snapshot is dropped and the days are replayed. */
-export const CITY_RULES_VERSION = 9;
+export const CITY_RULES_VERSION = 10;
 
 export const CITY: CityConfig = {
   // The roller follows the cursor: a tile per 100 points it moves, up to 20 tiles a second (rules 5).

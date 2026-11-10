@@ -232,6 +232,10 @@ export const FURNITURE = {
   highwaySign: "roads/sign-highway",
   barrier: (piece: string): string | null => (piece === "roads/road-square" ? null : `${piece}-barrier`),
 } as const;
+/** A river cell: a flat plane the 3D view makes itself (not a Kenney model), in the river's blue. */
+export const WATER = "water";
+export const WATER_COLOUR = 0x4f9fd8;
+
 /** A highway sign stands on straight cells where x + y is a multiple of this. */
 export const SIGN_EVERY = 12;
 
@@ -395,6 +399,8 @@ export interface Looks {
   kind: (x: number, y: number) => Kind | undefined;
   /** The road's grade on this cell (CitySim.gradeAt); left out, or 0, it is the grade of the cell's own passes. */
   grade?: (x: number, y: number) => Grade | 0;
+  /** Whether the cell is river (CitySim.isWater); left out, there is no water. */
+  water?: (x: number, y: number) => boolean;
 }
 
 /**
@@ -431,12 +437,18 @@ export function layoutCells(
           if (lightHere) out.push(side(FURNITURE.avenueLight, WHITE));
           if (junction) out.push({ model: FURNITURE.trafficLight, x: x + LIGHT_INSET, y: y + LIGHT_INSET, turns: p.turns, scale: LIGHT_SCALE, colour: STREET_COLOUR });
         }
+        // a straight span over water is a bridge: the kit's barrier rails along it (a highway has them everywhere)
+        if (grade < 5 && p.model === STRAIGHT && looks.water?.(x, y)) out.push({ model: FURNITURE.barrier(STRAIGHT)!, x, y, turns: p.turns, scale: 1, colour: WHITE });
         if (grade === 5) {
           const barrier = FURNITURE.barrier(p.model);
           if (barrier) out.push({ model: barrier, x, y, turns: p.turns, scale: 1, colour: WHITE });
           if (lightHere) out.push(side(FURNITURE.highwayLight, WHITE));
           if (p.model === STRAIGHT && (((x + y) % SIGN_EVERY) + SIGN_EVERY) % SIGN_EVERY === 0) out.push(side(FURNITURE.highwaySign, STREET_COLOUR, 1));
         }
+        continue;
+      }
+      if (looks.water?.(x, y)) {
+        out.push({ model: WATER, x, y, turns: 0, scale: 1, colour: WATER_COLOUR });
         continue;
       }
       const tier = tierAt(x, y);
@@ -446,7 +458,7 @@ export function layoutCells(
   return out;
 }
 
-const MODEL_INDEX = new Map(MODEL_NAMES.map((name, i) => [name, i]));
+const MODEL_INDEX = new Map([...MODEL_NAMES, WATER].map((name, i) => [name, i]));
 
 /**
  * A 32-bit hash of a layout, to tell whether a re-check changed anything on screen: it covers

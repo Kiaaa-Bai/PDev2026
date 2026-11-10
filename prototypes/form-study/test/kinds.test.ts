@@ -386,6 +386,10 @@ describe("kindFor with the lot's surroundings (zones)", () => {
     for (const roll of [0, 0.3, 0.7, 0.99]) expect(["shop", "office"]).toContain(kindForWith(beside, 0, roll, BAL, false, { highwayFrontage: true }));
   });
 
+  it("keeps industry off the waterfront", () => {
+    expect(kindForWith(beside, 0, WORK, BAL, false, { outer: true, waterfront: true })).toBe("office");
+  });
+
   it("counts industry as a workplace with jobs", () => {
     expect(isKind("industrial")).toBe(true);
     expect(JOBS.industrial).toBeGreaterThan(0);

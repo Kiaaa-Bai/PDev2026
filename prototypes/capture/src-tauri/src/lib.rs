@@ -55,6 +55,12 @@ async fn load_snapshot(dir: tauri::State<'_, DataDir>) -> Result<String, String>
     Ok(store::load_snapshot(&dir.0))
 }
 
+/// This data folder's world seed, which decides where the rivers run (made on first launch, then kept).
+#[tauri::command]
+async fn world_seed(dir: tauri::State<'_, DataDir>) -> Result<u32, String> {
+    store::world_seed(&dir.0).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn save_snapshot(json: String, dir: tauri::State<'_, DataDir>) -> Result<(), String> {
     store::save_snapshot(&dir.0, &json).map_err(|e| e.to_string())
@@ -87,6 +93,7 @@ pub fn run() {
             days_text,
             load_snapshot,
             save_snapshot,
+            world_seed,
             display_bounds,
             mouse_button_down,
             capture_source

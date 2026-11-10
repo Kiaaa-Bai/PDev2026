@@ -39,6 +39,8 @@ import {
   SHOP_POOL,
   viewRadius,
   VIEW_HOLD_MS,
+  WATER,
+  WATER_COLOUR,
   wheelZoom,
   wheelZoomTarget,
   type Placement,
@@ -1005,5 +1007,33 @@ describe("buildings by kind and density", () => {
     for (const m of [...letters("industrial/building-", "abcdefgh"), "industrial/chimney-small", "industrial/chimney-large", "industrial/detail-tank"]) {
       expect(MODEL_NAMES, m).toContain(m);
     }
+  });
+});
+
+describe("rivers on screen", () => {
+  // a river along y = 2..3, a road along x = 0 crossing it from y = -2 to y = 6
+  const water = (x: number, y: number) => y === 2 || y === 3;
+  const road = new Set(Array.from({ length: 9 }, (_, i) => `0,${i - 2}`));
+  const lay = (grade: 1 | 2 | 3 | 4 | 5) =>
+    layoutCells((x, y) => road.has(`${x},${y}`), () => 0, 0, 2, 4, { driven: () => 1, built: () => 0, kind: () => undefined, grade: () => grade, water });
+
+  it("draws every water cell without road as a water plane, in the river's colour", () => {
+    const planes = lay(2).filter((p) => p.model === WATER);
+    // the view is x -4..4, y -2..6: two rows of nine, less the two the road crosses
+    expect(planes).toHaveLength(16);
+    for (const p of planes) expect(p).toMatchObject({ colour: WATER_COLOUR, turns: 0 });
+    expect(planes.some((p) => p.x === 0)).toBe(false);
+  });
+
+  it("gives a straight road over water the barrier rails of a bridge, at any grade", () => {
+    for (const g of [1, 3, 5] as const) {
+      const rails = lay(g).filter((p) => p.model === "roads/road-straight-barrier");
+      expect(rails.map((p) => p.y).sort(), `grade ${g}`).toEqual(g === 5 ? [-1, 0, 1, 2, 3, 4, 5] : [2, 3]);
+    }
+  });
+
+  it("knows the water model for the layout key", () => {
+    const a = lay(2);
+    expect(layoutKey(a)).not.toBe(layoutKey(a.filter((p) => p.model !== WATER)));
   });
 });

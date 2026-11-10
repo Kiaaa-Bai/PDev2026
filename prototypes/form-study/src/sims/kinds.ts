@@ -81,6 +81,8 @@ export interface LotContext {
   clusterKind?: Kind | null;
   /** The lot fronts a highway (grade 5): only a shop or an office. */
   highwayFrontage?: boolean;
+  /** The lot touches a river: no industry here (the waterfront is for homes, shops and offices). */
+  waterfront?: boolean;
 }
 
 /** Commercial jobs are short while there are fewer than one for this many residents (Cities: Skylines' zero point). */
@@ -175,7 +177,7 @@ const isWorkplaceKind = (k: Kind): boolean => k === "shop" || k === "office" || 
 /** Which workplace: a shop where shops are short, at a corner or beside an avenue; industry in the outer ring (or next to industry) away from homes; otherwise an office. */
 function workplaceKind(n: Neighbours, besideAvenue: boolean, ctx: LotContext): Kind {
   if (ctx.commercialShort || n.cornerRoads || besideAvenue) return "shop";
-  if ((ctx.outer || ctx.touchesIndustry) && !ctx.nearHome) return "industrial";
+  if ((ctx.outer || ctx.touchesIndustry) && !ctx.nearHome && !ctx.waterfront) return "industrial";
   return "office";
 }
 

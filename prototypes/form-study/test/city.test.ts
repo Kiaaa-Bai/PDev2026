@@ -3,6 +3,7 @@ import { CITY_RULES_VERSION } from "../src/config";
 import { CitySim, cellKey, roadMaskAt, type CityConfig } from "../src/sims/city";
 import { JOBS, kindFor, neighboursAt, RESIDENTS, UNLOCKS, type Kind } from "../src/sims/kinds";
 import { jobsOf, residentsOf } from "../src/sims/people";
+import { isWater } from "../src/sims/world";
 
 const cfg: CityConfig = {
   speed: 1,
@@ -323,8 +324,8 @@ describe("CitySim kinds", () => {
   }
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
-  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8) and zones (9) change what a city grows", () => {
-    expect(CITY_RULES_VERSION).toBe(9);
+  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8), zones (9) and rivers (10) change what a city grows", () => {
+    expect(CITY_RULES_VERSION).toBe(10);
   });
 
   it("gives every lot a kind, stored apart from the time its house appears", () => {
@@ -1430,5 +1431,51 @@ describe("CitySim density capped by the road", () => {
 
   it("grows by age alone with zoning off", () => {
     expect(houseBeside(2, cfg).houseTier(2, 1, 21 * MIN)).toBe(3);
+  });
+});
+
+describe("CitySim rivers", () => {
+  const SEED = 7;
+  const wet: CityConfig = { ...cfg, zoning: true, worldSeed: SEED };
+  /** The first water cell below the roller's start in column 0, and the dry one above it. */
+  const firstWater = (() => {
+    let y = 1;
+    while (!isWater(SEED, 0, y)) y++;
+    return y;
+  })();
+
+  it("lays road across a river but makes no lot on water", () => {
+    const snap = through(new CitySim(wet).snapshot());
+    snap.roller = { x: 0, y: firstWater - 4, dir: 1, progress: 0 };
+    const sim = CitySim.restore(wet, snap)!;
+    swipe(sim, 1000);
+    sim.advanceTo(1000 + 10_500); // ten cells south, across the river
+    const roadOnWater = [...sim.road.keys()].filter((k) => isWater(SEED, ...(k.split(",").map(Number) as [number, number])));
+    expect(roadOnWater.length).toBeGreaterThanOrEqual(2);
+    for (const k of sim.lots.keys()) expect(isWater(SEED, ...(k.split(",").map(Number) as [number, number])), k).toBe(false);
+  });
+
+  it("keeps its world seed through a snapshot and refuses one from another world", () => {
+    const sim = new CitySim(wet);
+    swipe(sim, 1000);
+    sim.advanceTo(3000);
+    const snap = through(sim.snapshot());
+    expect(snap.worldSeed).toBe(SEED);
+    expect(CitySim.restore(wet, snap)).not.toBeNull();
+    expect(CitySim.restore({ ...wet, worldSeed: SEED + 1 }, snap)).toBeNull();
+    expect(CitySim.restore(cfg, snap)).toBeNull();
+  });
+
+  it("lets a waterfront home grow a step denser than its street allows", () => {
+    const y = firstWater - 1; // dry, beside the water
+    const snap = through(new CitySim(wet).snapshot());
+    snap.road = [-2, -1, 0, 1, 2].map((x): [string, number] => [cellKey(x, y - 1), 1]);
+    snap.grades = snap.road.map(([k]) => [k, 2]);
+    snap.lots = [[cellKey(0, y), 0], [cellKey(2, y - 2), 0]];
+    snap.kinds = [[cellKey(0, y), "house"], [cellKey(2, y - 2), "house"]];
+    snap.rolls = [[cellKey(0, y), 0.9], [cellKey(2, y - 2), 0.9]];
+    const sim = CitySim.restore(wet, snap)!;
+    expect(sim.houseTier(0, y, 1e12)).toBe(2); // on the waterfront
+    expect(sim.houseTier(2, y - 2, 1e12)).toBe(1); // across the street, dry
   });
 });

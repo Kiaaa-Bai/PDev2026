@@ -61,7 +61,7 @@ describe("sketchItems", () => {
     const sim = new CitySim(CITY);
     sim.roller.x = 5;
     sim.roller.y = -3;
-    expect(sketchItems(sim, { x: 5, y: -3 }, 15)).toEqual({ roads: [], lots: [], roller: { x: 5, y: -3 } });
+    expect(sketchItems(sim, { x: 5, y: -3 }, 15)).toEqual({ roads: [], lots: [], water: [], roller: { x: 5, y: -3 } });
   });
 
   it("is centred where it is asked, not at the origin", () => {
@@ -90,5 +90,17 @@ describe("sketch road looks by grade", () => {
       expect(lum(SKETCH_ROADS.night[g]), `night ${g + 1}`).toBeGreaterThan(lum(SKETCH_ROADS.night[g - 1]));
       expect(SKETCH_ROADS.width[g]).toBeGreaterThan(SKETCH_ROADS.width[g - 1]);
     }
+  });
+});
+
+describe("sketch water", () => {
+  it("lists the river cells within the radius when the city has a world", () => {
+    const wetCity = new CitySim({ ...CITY, worldSeed: 7 });
+    let y = 1;
+    while (!wetCity.isWater(0, y)) y++;
+    const items = sketchItems(wetCity, { x: 0, y }, 3);
+    expect(items.water.some((c) => c.x === 0 && c.y === y)).toBe(true);
+    for (const c of items.water) expect(wetCity.isWater(c.x, c.y)).toBe(true);
+    expect(sketchItems(new CitySim(CITY), { x: 0, y }, 3).water).toEqual([]);
   });
 });

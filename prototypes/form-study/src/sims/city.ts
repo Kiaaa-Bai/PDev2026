@@ -5,6 +5,7 @@ import { isSnapshot, type CitySnapshot } from "./city-snapshot";
 import { BUFFER, isUnlocked, JOBS, kindFor, neighboursAt, RESIDENTS, RESIDENTS_PER_SHOP_JOB, zoneNow, zoneOf, type Demand, type Kind, type LotContext, type Zone } from "./kinds";
 import { gradeOfPasses, runGrade, runThrough, type Grade } from "./grades";
 import { headingFor } from "./steer";
+import { isWater } from "./world";
 import type { Sim } from "./types";
 
 export interface CityConfig {
@@ -45,6 +46,8 @@ export interface CityConfig {
    * its road's grade (`zoneNow`). Left out, lots are chosen and zoned as before.
    */
   zoning?: boolean;
+  /** When set, the world's seed: rivers run where `isWater` says, the roller bridges them, and no lot is made on water. */
+  worldSeed?: number;
   /** A lot beside new road gets its house after a delay in this range. */
   lotDelayMs: [number, number];
   /** Chance that a free cell beside new road becomes a lot. */
@@ -190,6 +193,7 @@ export class CitySim implements Sim {
   snapshot(): CitySnapshot {
     return {
       rules: CITY_RULES_VERSION,
+      worldSeed: this.cfg.worldSeed ?? null,
       road: [...this.road],
       rolls: [...this.rolls],
       grades: [...this.grades],
@@ -211,6 +215,7 @@ export class CitySim implements Sim {
   /** The city a snapshot describes, or null for another rules version or a snapshot of the wrong shape. */
   static restore(cfg: CityConfig, s: unknown): CitySim | null {
     if (!isSnapshot(s)) return null;
+    if (s.worldSeed !== (cfg.worldSeed ?? null)) return null; // a city grown in another world
     const sim = new CitySim(cfg);
     for (const [k, n] of s.road) {
       sim.road.set(k, n);
@@ -349,8 +354,19 @@ export class CitySim implements Sim {
       const n = this.road.get(cellKey(nx, ny));
       if (n !== undefined) grade = Math.max(grade, this.gradeAt(nx, ny) || gradeOfPasses(n));
     }
-    const cap = grade >= 4 ? 3 : grade === 3 ? 2 : 1;
+    // a waterfront lot is allowed one step more than its road
+    const cap = Math.min(3, (grade >= 4 ? 3 : grade === 3 ? 2 : 1) + (this.touchesWater(x, y) ? 1 : 0));
     return Math.min(byAge, cap) as 1 | 2 | 3;
+  }
+
+  /** Whether (x, y) is river (never, without a world seed). */
+  isWater(x: number, y: number): boolean {
+    return this.cfg.worldSeed !== undefined && isWater(this.cfg.worldSeed, x, y);
+  }
+
+  private touchesWater(x: number, y: number): boolean {
+    for (let d = 0; d < 4; d++) if (this.isWater(x + DX[d], y + DY[d])) return true;
+    return false;
   }
 
   /** What the lot at (x, y) is drawn as: its kind, or a shop or an office where its road rezoned a home. */
@@ -529,10 +545,13 @@ export class CitySim implements Sim {
       const ly = y + DY[d];
       const nk = cellKey(lx, ly);
       if (this.road.has(nk) || this.lots.has(nk)) continue;
+      // three draws for every free neighbour still, so a river changes nothing about where lots go but its own cells
+      const onWater = this.isWater(lx, ly);
       if (this.rng.next() >= this.cfg.lotChance) continue;
       // three draws for every new lot, whatever is unlocked, so what the draws decide never depends on the thresholds
       const ready = t + lo + this.rng.next() * (hi - lo);
       const roll = this.rng.next();
+      if (onWater) continue;
       const kind = this.kindOfNewLot(lx, ly, roll);
       this.kinds.set(nk, kind);
       this.rolls.set(nk, roll);
@@ -609,6 +628,7 @@ export class CitySim implements Sim {
       touchesIndustry,
       clusterKind,
       highwayFrontage,
+      waterfront: this.touchesWater(x, y),
     };
   }
 

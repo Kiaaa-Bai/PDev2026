@@ -37,11 +37,14 @@ const TEST_DAYS_MAX = 14;
 /** After the last record the generated city is left alone this long, so every house has grown. */
 const GROW_MS = 24 * 3_600_000;
 
+/** The dev page's world: a fixed seed, so its rivers are the same every time it is opened. */
+const DEV_CITY = { ...CITY, worldSeed: 7 };
+
 async function boot() {
   // The city's own clock while a recording is replayed, so a day recorded in the evening is shown in the evening.
   let replayed: CitySim | null = null;
   const clock = () => skyTime(hour, replayed && replayed.time() > 0 ? replayed.time() : null);
-  const view = new CityView3D(new CitySim(CITY), PANEL_W, PANEL_H, clock, runningClock(hour));
+  const view = new CityView3D(new CitySim(DEV_CITY), PANEL_W, PANEL_H, clock, runningClock(hour));
   await view.load();
   view.attachZoom();
   (window as unknown as { cityView: CityView3D }).cityView = view; // for a look from the console
@@ -49,7 +52,7 @@ async function boot() {
 
   /** A fresh city on the view: live (the mouse drives it) or file (a recording drives it). */
   function makeWorld(mode: World["mode"]): World {
-    const city = new CitySim(CITY);
+    const city = new CitySim(DEV_CITY);
     city.distance = startDistance;
     replayed = mode === "file" ? city : null;
     view.setSim(city);

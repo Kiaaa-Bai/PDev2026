@@ -28,6 +28,8 @@ export interface SketchLot {
 export interface SketchItems {
   roads: SketchRoad[];
   lots: SketchLot[];
+  /** River cells (none without a world seed). */
+  water: { x: number; y: number }[];
   roller: { x: number; y: number };
 }
 
@@ -47,9 +49,14 @@ export function sketchItems(sim: CitySim, centre: { x: number; y: number }, radi
   const gradeOf = (x: number, y: number, n: number): Grade => sim.gradeAt(x, y) || gradeOfPasses(n);
   const roads: SketchRoad[] = [];
   const lots: SketchLot[] = [];
+  const water: { x: number; y: number }[] = [];
   for (let y = cy - radius; y <= cy + radius; y++) {
     for (let x = cx - radius; x <= cx + radius; x++) {
       const n = driven(x, y);
+      if (n === undefined && sim.isWater(x, y)) {
+        water.push({ x, y });
+        continue;
+      }
       if (n === undefined) {
         if (sim.lots.has(cellKey(x, y))) lots.push({ x, y, kind: sim.lotForm(x, y) ?? "house" });
         continue;
@@ -65,7 +72,7 @@ export function sketchItems(sim: CitySim, centre: { x: number; y: number }, radi
       if (alone) roads.push({ x, y, nx: x, ny: y, grade });
     }
   }
-  return { roads, lots, roller: sim.rollerAt() };
+  return { roads, lots, water, roller: sim.rollerAt() };
 }
 
 /**
@@ -97,8 +104,8 @@ export const SKETCH_ROADS = {
   /** In points. */
   width: [1.5, 2, 2.5, 3.5, 4.5],
 } as const;
-const DAY = { ground: 0xe6ecd9, roads: SKETCH_ROADS.day, roller: 0xf2b705, outline: 0x2a2a2a };
-const NIGHT = { ground: 0x161b28, roads: SKETCH_ROADS.night, roller: 0xffd27a, outline: 0x000000 };
+const DAY = { ground: 0xe6ecd9, roads: SKETCH_ROADS.day, water: 0x8fc4e8, roller: 0xf2b705, outline: 0x2a2a2a };
+const NIGHT = { ground: 0x161b28, roads: SKETCH_ROADS.night, water: 0x1f3550, roller: 0xffd27a, outline: 0x000000 };
 /** A lot's square, as a share of its cell. */
 const LOT_SIZE = 0.55;
 
@@ -117,6 +124,18 @@ export function drawSketch(ctx: CanvasRenderingContext2D, items: SketchItems, op
   const { x: rx, y: ry } = items.roller;
   const sx = (x: number, y: number) => (x - rx - (y - ry)) * K;
   const sy = (x: number, y: number) => (x - rx + (y - ry)) * (K / 2);
+
+  // rivers first, under the roads: each cell a full diamond
+  ctx.fillStyle = css(look.water);
+  for (const c of items.water) {
+    ctx.beginPath();
+    ctx.moveTo(sx(c.x - 0.5, c.y - 0.5), sy(c.x - 0.5, c.y - 0.5));
+    ctx.lineTo(sx(c.x + 0.5, c.y - 0.5), sy(c.x + 0.5, c.y - 0.5));
+    ctx.lineTo(sx(c.x + 0.5, c.y + 0.5), sy(c.x + 0.5, c.y + 0.5));
+    ctx.lineTo(sx(c.x - 0.5, c.y + 0.5), sy(c.x - 0.5, c.y + 0.5));
+    ctx.closePath();
+    ctx.fill();
+  }
 
   ctx.lineCap = "round";
   for (const grade of [1, 2, 3, 4, 5] as const) {

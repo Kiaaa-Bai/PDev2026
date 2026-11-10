@@ -9,6 +9,8 @@ import { isKind, type Kind } from "./kinds";
 export interface CitySnapshot {
   /** CITY_RULES_VERSION when it was taken. */
   rules: number;
+  /** The world seed the city grew in (null without rivers). */
+  worldSeed: number | null;
   road: [string, number][];
   /** Each lot's own roll in [0, 1), drawn when it was made. */
   rolls: [string, number][];
@@ -68,6 +70,7 @@ export function isSnapshot(s: unknown): s is CitySnapshot {
   const r = v.roller as Record<string, unknown> | null | undefined;
   return (
     v.rules === CITY_RULES_VERSION &&
+    isNumberOrNull(v.worldSeed) &&
     isCellEntries(v.road) &&
     isGradeEntries(v.grades, v.road) &&
     isCellEntries(v.lots) &&

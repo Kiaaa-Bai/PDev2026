@@ -9,6 +9,8 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const SNAPSHOT_FILE: &str = "city-snapshot.json";
+/// The world's seed for this data folder (where its rivers run), made on first use and kept beside the records.
+const WORLD_SEED_FILE: &str = "world-seed.txt";
 
 pub fn file_name_for(date: NaiveDate) -> String {
     format!("cursor-{}.jsonl", date.format("%Y-%m-%d"))
@@ -86,6 +88,21 @@ pub fn save_snapshot(dir: &Path, json: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, dir.join(SNAPSHOT_FILE))
 }
 
+/// The world seed of this data folder: read from its file, or made from the clock (any number will do) and
+/// written there first, temp file then rename, so every later launch grows the same rivers.
+pub fn world_seed(dir: &Path) -> std::io::Result<u32> {
+    if let Some(seed) = std::fs::read_to_string(dir.join(WORLD_SEED_FILE)).ok().and_then(|t| t.trim().parse().ok()) {
+        return Ok(seed);
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let seed = (nanos % u128::from(u32::MAX)) as u32;
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{WORLD_SEED_FILE}.tmp"));
+    std::fs::write(&tmp, format!("{seed}\n"))?;
+    std::fs::rename(&tmp, dir.join(WORLD_SEED_FILE))?;
+    Ok(seed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +116,18 @@ mod tests {
 
     fn rec(t: u64) -> TouchRecord {
         TouchRecord { t, id: 1, x: 0.5, y: 0.5, state: TouchState::Move }
+    }
+
+    #[test]
+    fn the_world_seed_is_made_once_per_folder_and_kept() {
+        let dir = tempdir().unwrap();
+        let first = world_seed(dir.path()).unwrap();
+        assert_eq!(world_seed(dir.path()).unwrap(), first);
+        assert_eq!(fs::read_to_string(dir.path().join(WORLD_SEED_FILE)).unwrap().trim(), first.to_string());
+        // a folder with a seed already written keeps it
+        let other = tempdir().unwrap();
+        fs::write(other.path().join(WORLD_SEED_FILE), "12345\n").unwrap();
+        assert_eq!(world_seed(other.path()).unwrap(), 12345);
     }
 
     #[test]
