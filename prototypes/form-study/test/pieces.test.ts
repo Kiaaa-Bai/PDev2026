@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import {
   APARTMENT_POOL,
@@ -8,7 +9,9 @@ import {
   COMMERCIAL_SCALE,
   commercialScale,
   EASE_BACK_MS,
+  easeBackLeft,
   easeHalfHeight,
+  ELEVATION,
   GARDEN_TREE,
   houseTurns,
   housePiece,
@@ -25,6 +28,7 @@ import {
   MODEL_NAMES,
   OFFICE_LOW_POOL,
   OFFICE_TOWER_POOL,
+  panDelta,
   PARK_PLANTER,
   PARK_TREE,
   ROAD_BASE,
@@ -33,6 +37,7 @@ import {
   rotMask,
   SHOP_POOL,
   viewRadius,
+  VIEW_HOLD_MS,
   wheelZoom,
   wheelZoomTarget,
   type Placement,
@@ -818,5 +823,70 @@ describe("zoom", () => {
       expect(easeHalfHeight(5, 100)).toBe(5);
       expect(easeHalfHeight(40, -50)).toBe(40);
     });
+  });
+
+  describe("easeBackLeft", () => {
+    it("is all of the way to go at the start, none of it after 600 ms", () => {
+      expect(easeBackLeft(0)).toBe(1);
+      expect(easeBackLeft(-50)).toBe(1);
+      expect(easeBackLeft(EASE_BACK_MS)).toBe(0);
+      expect(easeBackLeft(EASE_BACK_MS + 1000)).toBe(0);
+    });
+
+    it("shrinks steadily, fast at first", () => {
+      let last = 1;
+      for (let ms = 0; ms <= EASE_BACK_MS; ms += 20) {
+        const left = easeBackLeft(ms);
+        expect(left).toBeLessThanOrEqual(last);
+        last = left;
+      }
+      expect(easeBackLeft(EASE_BACK_MS / 2)).toBeLessThan(0.5);
+    });
+  });
+
+  describe("panDelta", () => {
+    /** The view's camera, placed as CityView3D places it, looking at `target` on the ground. */
+    function camera(target: { x: number; y: number }, halfHeight: number): THREE.OrthographicCamera {
+      const aspect = PANEL_W / PANEL_H;
+      const c = new THREE.OrthographicCamera(-halfHeight * aspect, halfHeight * aspect, halfHeight, -halfHeight, 0.1, 400);
+      const distance = 50;
+      const flat = distance * Math.cos(ELEVATION) * Math.SQRT1_2;
+      c.position.set(target.x + flat, distance * Math.sin(ELEVATION), target.y + flat);
+      c.lookAt(target.x, 0, target.y);
+      c.updateMatrixWorld();
+      return c;
+    }
+
+    /** Where a point on the ground shows on the panel, in CSS pixels from its top-left. */
+    function onScreen(c: THREE.OrthographicCamera, x: number, y: number): { x: number; y: number } {
+      const p = new THREE.Vector3(x, 0, y).project(c);
+      return { x: ((p.x + 1) / 2) * PANEL_W, y: ((1 - p.y) / 2) * PANEL_H };
+    }
+
+    it("keeps the ground under the pointer: the city follows the drag", () => {
+      for (const [dx, dy, h] of [
+        [30, 0, 5],
+        [0, 30, 5],
+        [-12, 47, 5],
+        [80, -25, 40],
+      ]) {
+        const from = { x: 7, y: -3 };
+        const d = panDelta(dx, dy, h, PANEL_H);
+        const before = onScreen(camera(from, h), 9, -1);
+        const after = onScreen(camera({ x: from.x + d.x, y: from.y + d.y }, h), 9, -1);
+        expect(after.x - before.x).toBeCloseTo(dx, 6);
+        expect(after.y - before.y).toBeCloseTo(dy, 6);
+      }
+    });
+
+    it("moves nothing for no drag", () => {
+      const d = panDelta(0, 0, 5, PANEL_H);
+      expect(Math.abs(d.x)).toBe(0);
+      expect(Math.abs(d.y)).toBe(0);
+    });
+  });
+
+  it("holds a moved view for 10 s before easing it back", () => {
+    expect(VIEW_HOLD_MS).toBe(10_000);
   });
 });

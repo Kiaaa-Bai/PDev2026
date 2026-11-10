@@ -175,6 +175,8 @@ async function boot() {
   const cityView = new CityView3D(city, PANEL_W, PANEL_H, skyClock, live);
   await cityView.load();
   cityView.attachZoom();
+  // a drag moves the view only in the full 3D window; docked at an edge a drag moves the window (`modes`, set below)
+  cityView.attachPan(() => modes.mode === "full");
   const heatView = new HeatView(heat, fingers);
   app.stage.addChild(heatView.root);
   stageEl.append(cityView.canvas, heatCanvas);

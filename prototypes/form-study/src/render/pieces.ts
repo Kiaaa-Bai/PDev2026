@@ -278,12 +278,38 @@ export function wheelZoomTarget(halfHeight: number, deltaY: number, deltaMode: n
 /** A zoomed-out view settles back to the close-up in this long. */
 export const EASE_BACK_MS = 600;
 
+/** A dragged or zoomed-out view stays where it was put this long after the last drag or zoom, then eases back to the roller. */
+export const VIEW_HOLD_MS = 10_000;
+
+/** Camera: 30° above the ground (and turned 45° around), so a tile is a diamond. */
+export const ELEVATION = Math.PI / 6;
+
+/** The share of the way back still to go `elapsedMs` into easing back: 1 at the start, 0 after 600 ms, fast at first. */
+export function easeBackLeft(elapsedMs: number): number {
+  if (elapsedMs <= 0) return 1;
+  if (elapsedMs >= EASE_BACK_MS) return 0;
+  return (1 - elapsedMs / EASE_BACK_MS) ** 3;
+}
+
 /** The half-height `elapsedMs` into easing back to the close-up from `from`: fast at first, slowing to rest at 5. */
 export function easeHalfHeight(from: number, elapsedMs: number): number {
   if (elapsedMs <= 0) return from;
   if (elapsedMs >= EASE_BACK_MS || from <= MIN_HALF_HEIGHT) return MIN_HALF_HEIGHT;
-  const left = (1 - elapsedMs / EASE_BACK_MS) ** 3;
-  return MIN_HALF_HEIGHT + (from - MIN_HALF_HEIGHT) * left;
+  return MIN_HALF_HEIGHT + (from - MIN_HALF_HEIGHT) * easeBackLeft(elapsedMs);
+}
+
+/**
+ * How far the camera's target moves on the ground, in tiles, when the pointer drags the picture by (dx, dy) CSS
+ * pixels on a panel `heightPx` tall showing `halfHeight` tiles above and below its middle: the ground under the
+ * pointer stays under it, so the city follows the hand. Across the screen a pixel is 2·halfHeight/heightPx tiles;
+ * up and down the ground is seen at 30°, so a pixel there covers 1/sin(30°) = twice as far. Screen right is
+ * (1, −1)/√2 on the ground and screen down is (1, 1)/√2; the camera moves against the drag.
+ */
+export function panDelta(dxPx: number, dyPx: number, halfHeight: number, heightPx: number): { x: number; y: number } {
+  const perPx = (2 * halfHeight) / heightPx;
+  const across = dxPx * perPx;
+  const along = (dyPx * perPx) / Math.sin(ELEVATION);
+  return { x: -(across + along) * Math.SQRT1_2, y: (across - along) * Math.SQRT1_2 };
 }
 
 /** The cars on the streets, from the Car Kit: each trip's car is picked from them by who drives it. */

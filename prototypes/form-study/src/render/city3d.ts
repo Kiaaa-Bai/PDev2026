@@ -8,14 +8,19 @@ import { type NightUniform, patchAsphalt, patchPalette, patchWindows, readTexel,
 import { FaultOnce, Traffic, trafficRadius } from "./traffic";
 import {
   clampHalfHeight,
+  easeBackLeft,
   easeHalfHeight,
+  EASE_BACK_MS,
+  ELEVATION,
   lampHead,
   layoutCells,
   layoutKey,
   LIGHT,
   MIN_HALF_HEIGHT,
   MODEL_NAMES,
+  panDelta,
   ROLLER,
+  VIEW_HOLD_MS,
   viewRadius,
   wheelZoomTarget,
   type Looks,
@@ -82,8 +87,6 @@ async function loadModel(kit: Kit, path: string): Promise<Model> {
 
 /** Tiles visible above and below the roller when close up, which is where the view rests. */
 const DEFAULT_HALF_HEIGHT = MIN_HALF_HEIGHT;
-/** A zoomed-out view stays out this long after the last zoom input, then eases back. */
-const ZOOM_HOLD_MS = 5000;
 const PIXEL_RATIO = 2;
 /** Everything (the roller, the zoom, the sky, people and cars) draws up to this often while it moves. */
 const MAX_FPS = 60;
@@ -92,8 +95,6 @@ const MAX_FPS = 60;
  * frame lets every frame of a 60 Hz display through, and every other one of a 120 Hz display.
  */
 const MIN_FRAME_MS = (1000 / MAX_FPS) * 0.75;
-/** Camera: 30° above the ground, turned 45° around, so a tile is a diamond. */
-const ELEVATION = Math.PI / 6;
 const CAMERA_DISTANCE = 50;
 /** A zoomed-out view reaches over 100 units in front of and behind the camera's depth, so the far plane is far. */
 const CAMERA_FAR = 400;
@@ -146,11 +147,18 @@ export class CityView3D {
   private builtKey: number | null = null;
   /** The radius, in cells, the instances were last built out to. */
   private builtRadius = 0;
-  /** Tiles visible above and below the roller now; wheel or pinch changes it, and it eases back by itself. */
+  /** Tiles visible above and below the middle of the view now; wheel or pinch changes it, and it eases back by itself. */
   private halfHeight = DEFAULT_HALF_HEIGHT;
-  /** When the zoom was last changed by an input (the clock `update` is given), and the easing back once it has begun. */
-  private zoomedAt = -Infinity;
-  private easing: { from: number; since: number } | null = null;
+  /**
+   * Where a drag left the camera looking, on the ground in tiles, or null while it follows the roller. A dragged view
+   * stays on that spot as the roller drives on, so the city can be looked around.
+   */
+  private look: { x: number; y: number } | null = null;
+  /** While easing back: how far the view's middle still is from the roller, at the start of the easing. */
+  private offset = { x: 0, y: 0 };
+  /** When the view was last dragged or zoomed (the clock `update` is given), and the easing back once it has begun. */
+  private viewedAt = -Infinity;
+  private easing: { from: number; offset: { x: number; y: number }; since: number } | null = null;
   /** Where the roller was when last drawn, and whether something outside it needs a draw. */
   private lastMove = "";
   private stale = true;
@@ -317,12 +325,38 @@ export class CityView3D {
     this.invalidate();
   }
 
-  /** Zoom to `h` tiles (kept between 5 and 60) because of an input at `now`: it stays there for 5 s after the last one. */
+  /** Zoom to `h` tiles (kept between 5 and 60) because of an input at `now`: it stays there for 10 s after the last drag or zoom. */
   zoomTo(h: number, now: number = performance.now()): void {
     h = clampHalfHeight(h);
-    this.zoomedAt = now;
-    this.easing = null;
+    this.holdView(now);
     if (h !== this.halfHeight) this.setHalfHeight(h);
+  }
+
+  /**
+   * Move the view as a drag of (dx, dy) CSS pixels at `now` does: the ground under the pointer follows it. From then on
+   * the view stays on that spot, not on the roller, until it has been left alone for 10 s.
+   */
+  panBy(dxPx: number, dyPx: number, now: number = performance.now()): void {
+    const from = this.center(this.sim.rollerAt());
+    this.holdView(now);
+    const d = panDelta(dxPx, dyPx, this.halfHeight, this.height);
+    this.look = { x: from.x + d.x, y: from.y + d.y };
+    this.invalidate();
+  }
+
+  /** A drag or zoom at `now`: the view holds where it is (stopping any easing back, from where that had got to). */
+  private holdView(now: number): void {
+    this.viewedAt = now;
+    if (!this.easing) return;
+    this.easing = null;
+    const at = this.sim.rollerAt();
+    if (this.offset.x !== 0 || this.offset.y !== 0) this.look = { x: at.x + this.offset.x, y: at.y + this.offset.y };
+    this.offset = { x: 0, y: 0 };
+  }
+
+  /** The middle of the view: the spot a drag left it on, else the roller (plus what is left of an easing back). */
+  private center(at: { x: number; y: number }): { x: number; y: number } {
+    return this.look ?? { x: at.x + this.offset.x, y: at.y + this.offset.y };
   }
 
   /**
@@ -353,16 +387,62 @@ export class CityView3D {
     });
   }
 
-  /** Once the zoom has been left alone for 5 s, ease it back to the close-up over 600 ms. Returns true while the view is changing. */
-  private stepZoom(now: number): boolean {
-    if (this.halfHeight === DEFAULT_HALF_HEIGHT) return false;
+  /**
+   * Press and drag on the canvas moves the view, the city following the hand, while `allowed()` says so (the window
+   * only allows it in its full 3D mode, where a drag does not move the window). The cursor still drives the roller
+   * meanwhile: everything the cursor does counts.
+   */
+  attachPan(allowed: () => boolean): void {
+    const c = this.canvas;
+    let last: { x: number; y: number; id: number } | null = null;
+    c.style.cursor = "grab";
+    c.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !allowed()) return;
+      last = { x: e.clientX, y: e.clientY, id: e.pointerId };
+      c.setPointerCapture(e.pointerId);
+      c.style.cursor = "grabbing";
+    });
+    c.addEventListener("pointermove", (e) => {
+      if (!last || e.pointerId !== last.id) return;
+      const dx = e.clientX - last.x;
+      const dy = e.clientY - last.y;
+      if (dx === 0 && dy === 0) return;
+      last.x = e.clientX;
+      last.y = e.clientY;
+      this.panBy(dx, dy);
+    });
+    const end = (e: PointerEvent) => {
+      if (!last || e.pointerId !== last.id) return;
+      last = null;
+      c.style.cursor = "grab";
+    };
+    c.addEventListener("pointerup", end);
+    c.addEventListener("pointercancel", end);
+  }
+
+  /**
+   * Once the view has been left alone for 10 s, ease it back over 600 ms: the zoom to the close-up and the middle onto
+   * the roller, together (onto where the roller is by then, as it may be driving). Returns true while the view changes.
+   */
+  private stepView(now: number): boolean {
     if (!this.easing) {
-      if (now - this.zoomedAt < ZOOM_HOLD_MS) return false;
-      this.easing = { from: this.halfHeight, since: now };
+      if (this.halfHeight === DEFAULT_HALF_HEIGHT && !this.look) return false;
+      if (now - this.viewedAt < VIEW_HOLD_MS) return false;
+      const at = this.sim.rollerAt();
+      const offset = this.look ? { x: this.look.x - at.x, y: this.look.y - at.y } : { x: 0, y: 0 };
+      this.easing = { from: this.halfHeight, offset, since: now };
+      this.look = null;
     }
-    const h = easeHalfHeight(this.easing.from, now - this.easing.since);
-    if (h === DEFAULT_HALF_HEIGHT) this.easing = null;
-    this.setHalfHeight(h);
+    const elapsed = now - this.easing.since;
+    const left = easeBackLeft(elapsed);
+    this.offset = { x: this.easing.offset.x * left, y: this.easing.offset.y * left };
+    const h = easeHalfHeight(this.easing.from, elapsed);
+    if (elapsed >= EASE_BACK_MS) {
+      this.easing = null;
+      this.offset = { x: 0, y: 0 };
+    }
+    if (h !== this.halfHeight) this.setHalfHeight(h);
+    this.invalidate();
     return true;
   }
 
@@ -419,11 +499,10 @@ export class CityView3D {
   }
 
   /**
-   * Rebuild instances around the roller: only cells within `radius` are drawn.
-   * Returns false, touching nothing, when that is exactly what is already on screen.
+   * Rebuild instances around the middle of the view `at` (the roller, unless the view was dragged): only cells within
+   * `radius` are drawn. Returns false, touching nothing, when that is exactly what is already on screen.
    */
-  private rebuild(t: number, radius: number): boolean {
-    const at = this.sim.rollerAt();
+  private rebuild(t: number, radius: number, at: { x: number; y: number }): boolean {
     const has = (x: number, y: number) => this.sim.road.has(cellKey(x, y));
     const looks: Looks = {
       driven: (x, y) => this.sim.road.get(cellKey(x, y)) ?? 0,
@@ -482,26 +561,28 @@ export class CityView3D {
     if (!this.roller || this.paused || now - this.lastRender < MIN_FRAME_MS) return false;
     const t = this.sim.time();
     const at = this.sim.rollerAt();
-    const move = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir}`;
-    let changed = this.stale || move !== this.lastMove;
-    if (this.stepZoom(now)) changed = true;
+    let changed = this.stepView(now);
+    // the middle of the view: the roller, or where a drag left it
+    const c = this.center(at);
+    const move = `${Math.round(at.x * 32)},${Math.round(at.y * 32)},${this.sim.roller.dir},${Math.round(c.x * 32)},${Math.round(c.y * 32)}`;
+    if (this.stale || move !== this.lastMove) changed = true;
     if (this.updateSky()) changed = true;
     // Zoomed out, build as far as the view needs and keep that while easing back, so the way in does not
     // rebuild a big layout every frame; the radius drops once the view is back at the close-up.
     const need = viewRadius(this.halfHeight);
     const radius = this.halfHeight > DEFAULT_HALF_HEIGHT ? Math.max(need, this.builtRadius) : need;
-    // Check the surroundings when the roller has moved a few cells, the city changed, the view needs
+    // Check the surroundings when the middle of the view has moved a few cells, the city changed, the view needs
     // another radius, or every 5 s (a house can age into a bigger one). It only counts as a change if
     // what is drawn differs.
-    const cellSig = `${Math.round(at.x / 4)},${Math.round(at.y / 4)},${this.sim.version},${Math.floor(t / 5000)},${radius}`;
+    const cellSig = `${Math.round(c.x / 4)},${Math.round(c.y / 4)},${this.sim.version},${Math.floor(t / 5000)},${radius}`;
     if (cellSig !== this.builtFor) {
       this.builtFor = cellSig;
-      if (this.rebuild(t, radius)) changed = true;
+      if (this.rebuild(t, radius, c)) changed = true;
     }
     // The traffic is asked at every frame; it reports whether anybody moved or came or went. Its heavy work is in tasks
     // of its own: this only draws what they found.
     try {
-      if (this.traffic.update(this.sim, this.trafficClock(), [at.x, at.y], trafficRadius(this.halfHeight))) changed = true;
+      if (this.traffic.update(this.sim, this.trafficClock(), [c.x, c.y], trafficRadius(this.halfHeight))) changed = true;
       this.trafficFault.ok();
     } catch (e) {
       // a fault in the traffic must not stop the city drawing: say it once (and again if it is another one), carry on without it
@@ -515,9 +596,9 @@ export class CityView3D {
     // Back far enough that the near edge of a zoomed-out ground is still in front of the camera.
     const distance = Math.max(CAMERA_DISTANCE, 2 * this.halfHeight + 10);
     const flat = distance * Math.cos(ELEVATION) * Math.SQRT1_2;
-    this.camera.position.set(at.x + flat, distance * Math.sin(ELEVATION), at.y + flat);
-    this.camera.lookAt(at.x, 0, at.y);
-    this.ground.position.set(at.x, -0.01, at.y);
+    this.camera.position.set(c.x + flat, distance * Math.sin(ELEVATION), c.y + flat);
+    this.camera.lookAt(c.x, 0, c.y);
+    this.ground.position.set(c.x, -0.01, c.y);
     this.renderer.render(this.scene, this.camera);
     this.lastRender = now;
     return true;
