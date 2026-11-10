@@ -41,6 +41,9 @@ import {
   VIEW_HOLD_MS,
   WATER,
   WATER_COLOUR,
+  waterPiece,
+  ROUND,
+  FILLET,
   wheelZoom,
   wheelZoomTarget,
   type Placement,
@@ -691,14 +694,15 @@ describe("zoom", () => {
     expect(clampHalfHeight(1000)).toBe(60);
   });
 
-  it("builds ceil(halfHeight * 2.55) + 2 cells around the roller, at least 30 and at most 120", () => {
+  it("builds ceil(halfHeight * 2.55) + 2 cells around the middle of the view, at least 30, enough for the widest zoom", () => {
     expect(viewRadius(5)).toBe(30); // ceil(12.75) + 2 = 15, lifted to the close-up's 30
     expect(viewRadius(12)).toBe(33);
     expect(viewRadius(20)).toBe(53);
     expect(viewRadius(46)).toBe(120);
-    expect(viewRadius(60)).toBe(120); // ceil(153) + 2 = 155, held to the cap
-    expect(viewRadius(1000)).toBe(120);
-    expect(viewRadius(Infinity)).toBe(120);
+    // the widest zoom needs ceil(153) + 2 = 155: with the old cap of 120 its corners were cut off (Kia, 2026-11-10)
+    expect(viewRadius(MAX_HALF_HEIGHT)).toBe(155);
+    expect(viewRadius(1000)).toBe(155);
+    expect(viewRadius(Infinity)).toBe(155);
   });
 
   describe("what the camera sees", () => {
@@ -749,7 +753,7 @@ describe("zoom", () => {
       expect(viewRadius(h)).toBeGreaterThanOrEqual(last);
       last = viewRadius(h);
     }
-    expect(last).toBeLessThanOrEqual(120);
+    expect(last).toBe(155); // the widest zoom builds its whole picture
   });
 
   describe("wheelZoom", () => {
@@ -1017,12 +1021,12 @@ describe("rivers on screen", () => {
   const lay = (grade: 1 | 2 | 3 | 4 | 5) =>
     layoutCells((x, y) => road.has(`${x},${y}`), () => 0, 0, 2, 4, { driven: () => 1, built: () => 0, kind: () => undefined, grade: () => grade, water });
 
-  it("draws every water cell without road as a water plane, in the river's colour", () => {
-    const planes = lay(2).filter((p) => p.model === WATER);
-    // the view is x -4..4, y -2..6: two rows of nine, less the two the road crosses
-    expect(planes).toHaveLength(16);
+  it("draws every water cell as a water piece in the river's colour, under the road where a road bridges it", () => {
+    const planes = lay(2).filter((p) => p.model.startsWith(`${WATER}-`));
+    // the view is x -4..4, y -2..6: two rows of nine (a straight river: no fillets)
+    expect(planes).toHaveLength(18);
     for (const p of planes) expect(p).toMatchObject({ colour: WATER_COLOUR, turns: 0 });
-    expect(planes.some((p) => p.x === 0)).toBe(false);
+    expect(planes.filter((p) => p.x === 0)).toHaveLength(2);
   });
 
   it("gives a straight road over water the barrier rails of a bridge, at any grade", () => {
@@ -1034,6 +1038,40 @@ describe("rivers on screen", () => {
 
   it("knows the water model for the layout key", () => {
     const a = lay(2);
-    expect(layoutKey(a)).not.toBe(layoutKey(a.filter((p) => p.model !== WATER)));
+    expect(layoutKey(a)).not.toBe(layoutKey(a.filter((p) => !p.model.startsWith(WATER))));
+  });
+});
+
+describe("smooth rivers", () => {
+  /** Lay out a patch of water and land around (0, 0); no roads. */
+  const lay = (wet: (x: number, y: number) => boolean) =>
+    layoutCells(() => false, () => 0, 0, 0, 3, { driven: () => 1, built: () => 0, kind: () => undefined, water: wet });
+  const at = (placed: Placement[], x: number, y: number) => placed.filter((p) => p.x === x && p.y === y).map((p) => p.model);
+
+  it("keeps the long sides of a straight river square", () => {
+    const placed = lay((_, y) => y === 0);
+    expect(at(placed, 1, 0)).toEqual([waterPiece(0)]);
+  });
+
+  it("rounds a water cell's corners where it has no water on either side", () => {
+    // a lone pond cell: every corner rounded
+    expect(at(lay((x, y) => x === 0 && y === 0), 0, 0)).toEqual([waterPiece(ROUND.NW | ROUND.NE | ROUND.SE | ROUND.SW)]);
+    // the end of a river running east: its two west corners
+    expect(at(lay((x, y) => y === 0 && x >= 0), 0, 0)).toEqual([waterPiece(ROUND.NW | ROUND.SW)]);
+  });
+
+  it("fills the inner corner of a land cell the river bends around", () => {
+    // a step: water at (0, 0) and (1, 1), plus (1, 0) joining them; the land at (0, 1) has water north and east
+    const step = new Set(["0,0", "1,0", "1,1"]);
+    const placed = lay((x, y) => step.has(`${x},${y}`));
+    expect(at(placed, 0, 1)).toEqual([FILLET.NE]);
+    // the step's outer corner is rounded: (1, 0) has no water north or east
+    expect(at(placed, 1, 0)).toEqual([waterPiece(ROUND.NE)]);
+  });
+
+  it("knows every water piece for the layout key, and makes a different key for a rounded one", () => {
+    const square = lay((_, y) => y === 0);
+    const rounded = square.map((p) => (p.x === 1 ? { ...p, model: waterPiece(ROUND.NE) } : p));
+    expect(layoutKey(rounded)).not.toBe(layoutKey(square));
   });
 });

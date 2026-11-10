@@ -232,9 +232,39 @@ export const FURNITURE = {
   highwaySign: "roads/sign-highway",
   barrier: (piece: string): string | null => (piece === "roads/road-square" ? null : `${piece}-barrier`),
 } as const;
-/** A river cell: a flat plane the 3D view makes itself (not a Kenney model), in the river's blue. */
+/** River pieces are flat shapes the 3D view makes itself (not Kenney models), all named from this, in the river's blue. */
 export const WATER = "water";
 export const WATER_COLOUR = 0x4f9fd8;
+/** A water cell's corners that are rounded off: those with no water on either side of them (N is y − 1). */
+export const ROUND = { NW: 1, NE: 2, SE: 4, SW: 8 } as const;
+/** The water piece with the corners in `rounded` (ROUND bits) rounded off to a quarter circle of half a cell. */
+export const waterPiece = (rounded: number): string => `${WATER}-${rounded}`;
+/** The water filling a land cell's corner where the river bends around it: the corner square less a quarter circle. */
+export const FILLET = { NE: `${WATER}-fillet-ne`, SE: `${WATER}-fillet-se`, SW: `${WATER}-fillet-sw`, NW: `${WATER}-fillet-nw` } as const;
+/** Every water piece, for the 3D view to make and the layout key to know. */
+export const WATER_PIECES: readonly string[] = [...Array.from({ length: 16 }, (_, i) => waterPiece(i)), ...Object.values(FILLET)];
+
+/**
+ * The water drawn on (x, y): on a river cell its piece, rounded where the river ends or turns outward; on a dry cell
+ * the fillets that smooth the river's inner bends. Together they turn the river's cell staircase into a smooth band.
+ */
+function waterAt(wet: (x: number, y: number) => boolean, x: number, y: number): Placement[] {
+  const n = wet(x, y - 1);
+  const e = wet(x + 1, y);
+  const s = wet(x, y + 1);
+  const w = wet(x - 1, y);
+  const piece = (model: string): Placement => ({ model, x, y, turns: 0, scale: 1, colour: WATER_COLOUR });
+  if (wet(x, y)) {
+    const rounded = (!n && !w ? ROUND.NW : 0) | (!n && !e ? ROUND.NE : 0) | (!s && !e ? ROUND.SE : 0) | (!s && !w ? ROUND.SW : 0);
+    return [piece(waterPiece(rounded))];
+  }
+  const out: Placement[] = [];
+  if (n && e) out.push(piece(FILLET.NE));
+  if (s && e) out.push(piece(FILLET.SE));
+  if (s && w) out.push(piece(FILLET.SW));
+  if (n && w) out.push(piece(FILLET.NW));
+  return out;
+}
 
 /** A highway sign stands on straight cells where x + y is a multiple of this. */
 export const SIGN_EVERY = 12;
@@ -286,7 +316,8 @@ export const clampHalfHeight = (h: number): number => Math.min(MAX_HALF_HEIGHT, 
  * halfHeight across and, at 30 degrees up, 2 x halfHeight deep along the ground, then turned 45 degrees), two
  * more, never fewer than the close-up's 30 and never more than 120.
  */
-export const viewRadius = (halfHeight: number): number => Math.min(120, Math.max(30, Math.ceil(halfHeight * 2.55) + 2));
+export const viewRadius = (halfHeight: number): number =>
+  Math.min(Math.ceil(MAX_HALF_HEIGHT * 2.55) + 2, Math.max(30, Math.ceil(halfHeight * 2.55) + 2));
 
 /** How much one unit of wheel delta scales the half-height (as the exponent of e): a pinch much more than a scroll. */
 const PINCH_RATE = 0.01;
@@ -423,6 +454,8 @@ export function layoutCells(
       if (has(x, y)) {
         const mask = (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) | (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
         const p = roadPiece(mask);
+        // a bridge: the river runs on under the road
+        if (looks.water?.(x, y)) out.push(...waterAt(looks.water, x, y));
         const grade = looks.grade?.(x, y) || gradeOfPasses(looks.driven(x, y));
         const base = grade === 4 ? (FURNITURE.avenueCross[p.model] ?? p.model) : p.model;
         out.push({ model: base, x, y, turns: p.turns, scale: 1, colour: roadColour(grade), flat: grade <= 3 });
@@ -447,9 +480,9 @@ export function layoutCells(
         }
         continue;
       }
-      if (looks.water?.(x, y)) {
-        out.push({ model: WATER, x, y, turns: 0, scale: 1, colour: WATER_COLOUR });
-        continue;
+      if (looks.water) {
+        out.push(...waterAt(looks.water, x, y));
+        if (looks.water(x, y)) continue;
       }
       const tier = tierAt(x, y);
       if (tier) out.push(...buildingPlacements(looks.kind(x, y) ?? "house", tier, x, y, houseTurns(has, x, y), looks.built(x, y)));
@@ -458,7 +491,7 @@ export function layoutCells(
   return out;
 }
 
-const MODEL_INDEX = new Map([...MODEL_NAMES, WATER].map((name, i) => [name, i]));
+const MODEL_INDEX = new Map([...MODEL_NAMES, ...WATER_PIECES].map((name, i) => [name, i]));
 
 /**
  * A 32-bit hash of a layout, to tell whether a re-check changed anything on screen: it covers

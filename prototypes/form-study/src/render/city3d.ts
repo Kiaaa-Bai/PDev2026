@@ -21,8 +21,9 @@ import {
   panDelta,
   ROLLER,
   VIEW_HOLD_MS,
+  ROUND,
   viewRadius,
-  WATER,
+  WATER_PIECES,
   wheelZoomTarget,
   type Looks,
   type Placement,
@@ -84,6 +85,45 @@ async function loadModel(kit: Kit, path: string): Promise<Model> {
     map = shareOne(kit, map as THREE.Texture);
   }
   return { geo, mat: new THREE.MeshLambertMaterial({ map }), map };
+}
+
+/**
+ * The shape of a river piece (`waterPiece` / `FILLET` in pieces.ts), flat on the ground just under the roads. Every curve
+ * is a quarter circle of half a cell around the cell's centre: a rounded corner cuts it off, a fillet fills a dry cell's
+ * corner outside it, so rounded ends and filled bends meet in one smooth line.
+ */
+function waterGeometry(name: string): THREE.BufferGeometry {
+  const h = 0.5;
+  const shape = new THREE.Shape();
+  const fillet = /fillet-(n|s)(e|w)$/.exec(name);
+  if (fillet) {
+    // drawn for the north-east corner (shape y is north), then mirrored to its own corner
+    const sx = fillet[2] === "e" ? 1 : -1;
+    const sy = fillet[1] === "n" ? 1 : -1;
+    const steps = 8;
+    shape.moveTo(sx * h, 0);
+    shape.lineTo(sx * h, sy * h);
+    shape.lineTo(0, sy * h);
+    for (let i = 1; i <= steps; i++) {
+      const a = (Math.PI / 2) * (1 - i / steps);
+      shape.lineTo(sx * h * Math.cos(a), sy * h * Math.sin(a));
+    }
+  } else {
+    const rounded = Number(name.slice(name.lastIndexOf("-") + 1));
+    shape.moveTo(0, -h);
+    const corner = (bit: number, start: number, cx: number, cy: number, ex: number, ey: number) => {
+      if (rounded & bit) shape.absarc(0, 0, h, start, start + Math.PI / 2, false);
+      else {
+        shape.lineTo(cx, cy);
+        shape.lineTo(ex, ey);
+      }
+    };
+    corner(ROUND.SE, -Math.PI / 2, h, -h, h, 0);
+    corner(ROUND.NE, 0, h, h, 0, h);
+    corner(ROUND.NW, Math.PI / 2, -h, h, -h, 0);
+    corner(ROUND.SW, Math.PI, -h, -h, 0, -h);
+  }
+  return new THREE.ShapeGeometry(shape, 8).rotateX(-Math.PI / 2).translate(0, -0.005, 0);
 }
 
 /** The mesh bucket of a road piece drawn with a flat kerb: its model name with this after it. */
@@ -229,9 +269,9 @@ export class CityView3D {
       return kit;
     };
     await Promise.all(MODEL_NAMES.map(async (n) => this.models.set(n, await loadModel(kitFor(n), n))));
-    // a river cell: a flat square just above the ground and below the roads, tinted by its instance colour
-    const water = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, -0.005, 0);
-    this.models.set(WATER, { geo: water, mat: new THREE.MeshLambertMaterial({ color: 0xffffff }), map: null });
+    // river pieces: flat shapes just above the ground and below the roads, tinted by their instance colour
+    const waterMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    for (const name of WATER_PIECES) this.models.set(name, { geo: waterGeometry(name), mat: waterMat, map: null });
     this.patchMaterials();
     const r = this.models.get(ROLLER.model)!;
     this.roller = new THREE.Mesh(r.geo, r.mat);
