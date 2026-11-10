@@ -951,7 +951,7 @@ describe("road furniture by grade", () => {
     expect(barriers.length).toBe(23); // one over every straight piece, turned like it
     expect(models(placed, "roads/road-end-barrier").length).toBe(2);
     for (const b of barriers) expect(roads(placed).find((r) => r.x === b.x && r.y === b.y)?.turns).toBe(b.turns);
-    expect(models(placed, "roads/light-curved-double").length).toBe(11);
+    expect(models(placed, "roads/light-curved-double").length).toBe(10); // 11 light cells, less the sign's
     const signs = models(placed, "roads/sign-highway");
     expect(signs.map((p) => Math.round(p.x))).toEqual([0]); // straights where x + y is a multiple of 12
     const atJunctions = lay(junctions, 5);
@@ -1088,5 +1088,18 @@ describe("rebuildDue (review #3)", () => {
     expect(rebuildDue({ viewChanged: false, halfHeight: 15, sinceLastMs: 250 })).toBe(true);
     expect(rebuildDue({ viewChanged: false, halfHeight: 60, sinceLastMs: 500 })).toBe(false);
     expect(rebuildDue({ viewChanged: false, halfHeight: 60, sinceLastMs: 1000 })).toBe(true);
+  });
+});
+
+describe("highway signs and lights (minor fix)", () => {
+  it("never stands a curved light on the cell of a highway sign", () => {
+    const set = new Set(Array.from({ length: 49 }, (_, i) => `${i - 24},0`));
+    const placed = layoutCells((x, y) => set.has(`${x},${y}`), () => 0, 0, 0, 24, { driven: () => 1, built: () => 0, kind: () => undefined, grade: () => 5 });
+    const signs = placed.filter((p) => p.model === "roads/sign-highway");
+    expect(signs.length).toBeGreaterThan(0);
+    for (const s of signs) {
+      const light = placed.find((p) => p.model === "roads/light-curved-double" && Math.round(p.x) === Math.round(s.x) && Math.round(p.y) === Math.round(s.y));
+      expect(light, `sign at ${s.x},${s.y}`).toBeUndefined();
+    }
   });
 });

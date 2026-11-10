@@ -30,7 +30,7 @@ function meander(seed: number, x: number): number {
  * kept (the same numbers as computing them afresh: caching changes nothing about which cells are water).
  */
 interface Memo {
-  bend: Map<number, number>;
+  bend: Map<number, [number, number]>;
   slot: Map<number, [centre: number, half: number]>;
 }
 const memos = new Map<number, Memo>();
@@ -40,20 +40,38 @@ function memoOf(seed: number): Memo {
   return m;
 }
 
+/** A column's bend as the lowest and highest the line reaches across the column's width (x − ½ to x + ½). */
+function bendSpan(seed: number, x: number, memo: Memo): [number, number] {
+  let span = memo.bend.get(x);
+  if (span === undefined) {
+    const a = meander(seed, x - 0.5);
+    const m = meander(seed, x);
+    const b = meander(seed, x + 0.5);
+    memo.bend.set(x, (span = [Math.min(a, m, b), Math.max(a, m, b)]));
+  }
+  return span;
+}
+
+/**
+ * Whether (x, y) is wet: within a river's half-width of its line anywhere across the column. Taking the line's whole
+ * span over the column (not just its middle) means neighbouring columns always share the row where they meet, so a
+ * river on a steep bend stays joined edge to edge instead of touching only at a corner.
+ */
 function wet(seed: number, x: number, y: number, shift: number): boolean {
   const memo = memoOf(seed);
-  let bend = memo.bend.get(x);
-  if (bend === undefined) memo.bend.set(x, (bend = meander(seed, x)));
-  const v = y - bend - shift;
-  const slot = Math.floor(v / RIVER_SPACING);
-  for (let k = slot - 1; k <= slot + 1; k++) {
+  const [lo, hi] = bendSpan(seed, x, memo);
+  const vlo = y - hi - shift;
+  const vhi = y - lo - shift;
+  const slot = Math.floor(vlo / RIVER_SPACING);
+  for (let k = slot - 1; k <= slot + 2; k++) {
     let band = memo.slot.get(k);
     if (!band) {
       const centre = k * RIVER_SPACING + RIVER_SPACING / 2 + (hash(seed, 1_000_003 + k) - 0.5) * 2 * JITTER;
       const width = hash(seed, 2_000_003 + k) < 0.5 ? 2 : 3;
       memo.slot.set(k, (band = [centre, width / 2]));
     }
-    if (Math.abs(v - band[0]) < band[1]) return true;
+    // the cell's offset from the line runs from vlo to vhi across the column: wet if any of it is within the half-width
+    if (vhi > band[0] - band[1] && vlo < band[0] + band[1]) return true;
   }
   return false;
 }

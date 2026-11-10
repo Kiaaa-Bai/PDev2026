@@ -163,6 +163,8 @@ export function kindFor(n: Neighbours, distance: number, roll: number, demand: D
     if (roll < CLUSTER_CHANCE) {
       const k = cluster;
       if (isWorkplaceKind(k) && (k !== "industrial" || industryAllowed(ctx))) return k;
+      // a park next door makes this a park too (once parks unlock): parks come in green blocks
+      if (k === "park" && isUnlocked("park", distance) && !ctx.nearIndustry) return "park";
       home = !isWorkplaceKind(k);
       r = roll / CLUSTER_CHANCE;
     } else r = (roll - CLUSTER_CHANCE) / (1 - CLUSTER_CHANCE);

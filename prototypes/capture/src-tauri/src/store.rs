@@ -88,11 +88,17 @@ pub fn save_snapshot(dir: &Path, json: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, dir.join(SNAPSHOT_FILE))
 }
 
-/// The world seed of this data folder: read from its file, or made from the clock (any number will do) and
-/// written there first, temp file then rename, so every later launch grows the same rivers.
+/// The world seed of this data folder: read from its file, or, when there is no file yet, made from the clock (any
+/// number will do) and written there first, temp file then rename, so every later launch grows the same rivers. A
+/// file that is there but cannot be read or is not a number is an error, and is left as it is: replacing it would
+/// quietly move every river.
 pub fn world_seed(dir: &Path) -> std::io::Result<u32> {
-    if let Some(seed) = std::fs::read_to_string(dir.join(WORLD_SEED_FILE)).ok().and_then(|t| t.trim().parse().ok()) {
-        return Ok(seed);
+    match std::fs::read_to_string(dir.join(WORLD_SEED_FILE)) {
+        Ok(text) => {
+            return text.trim().parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{WORLD_SEED_FILE}: {e}")));
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        Err(_) => {}
     }
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let seed = (nanos % u128::from(u32::MAX)) as u32;
@@ -116,6 +122,14 @@ mod tests {
 
     fn rec(t: u64) -> TouchRecord {
         TouchRecord { t, id: 1, x: 0.5, y: 0.5, state: TouchState::Move }
+    }
+
+    #[test]
+    fn a_broken_world_seed_file_is_an_error_and_is_left_alone() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(WORLD_SEED_FILE), "not a number\n").unwrap();
+        assert!(world_seed(dir.path()).is_err());
+        assert_eq!(fs::read_to_string(dir.path().join(WORLD_SEED_FILE)).unwrap(), "not a number\n");
     }
 
     #[test]

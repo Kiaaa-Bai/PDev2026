@@ -27,13 +27,17 @@ describe("isWater", () => {
     expect(differs).toBe(true);
   });
 
-  it("runs rivers 2 or 3 cells wide, 60 to 120 cells apart, down every column", () => {
+  it("runs rivers 2 or 3 cells deep (a little more on a steep bend, to stay joined), 60 to 120 cells apart, down every column", () => {
     expect(RIVER_SPACING).toBe(90);
     for (const seed of [1, 2, 3]) {
       for (const x of [-500, -37, 0, 41, 999]) {
         const runs = runsDown(seed, x, -1000, 1000);
         expect(runs.length, `seed ${seed} x ${x}`).toBeGreaterThan(14);
-        for (const [, len] of runs) expect([2, 3]).toContain(len);
+        for (const [, len] of runs) {
+          expect(len).toBeGreaterThanOrEqual(2);
+          expect(len).toBeLessThanOrEqual(5);
+        }
+        expect(runs.filter(([, len]) => len <= 3).length / runs.length).toBeGreaterThan(0.7);
         for (let i = 1; i < runs.length; i++) {
           const gap = runs[i][0] - runs[i - 1][0];
           expect(gap).toBeGreaterThanOrEqual(57);
@@ -51,5 +55,31 @@ describe("isWater", () => {
 
   it("never floods the cell the roller starts on", () => {
     for (let seed = 0; seed < 200; seed++) expect(isWater(seed, 0, 0), `seed ${seed}`).toBe(false);
+  });
+});
+
+describe("rivers stay joined (minor fix)", () => {
+  it("shares at least one row between every two neighbouring columns, so a river never meets only at a corner", () => {
+    for (const seed of [1, 2, 3, 7, 1769667240]) {
+      for (let x = -400; x < 400; x++) {
+        const here = new Set<number>();
+        const next = new Set<number>();
+        for (let y = -300; y <= 300; y++) {
+          if (isWater(seed, x, y)) here.add(y);
+          if (isWater(seed, x + 1, y)) next.add(y);
+        }
+        // every run in this column touches some water in the next one
+        for (const y of here) {
+          if (here.has(y - 1)) continue; // the run's first cell
+          let len = 0;
+          let touches = false;
+          while (here.has(y + len)) {
+            if (next.has(y + len)) touches = true;
+            len++;
+          }
+          if (y - 1 > -300 && y + len < 300) expect(touches, `seed ${seed} x ${x} y ${y}`).toBe(true);
+        }
+      }
+    }
   });
 });

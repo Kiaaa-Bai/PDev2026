@@ -500,8 +500,10 @@ export function layoutCells(
         if (grade === 5) {
           const barrier = FURNITURE.barrier(p.model);
           if (barrier) out.push({ model: barrier, x, y, turns: p.turns, scale: 1, colour: WHITE });
-          if (lightHere) out.push(side(FURNITURE.highwayLight, WHITE));
-          if (p.model === STRAIGHT && (((x + y) % SIGN_EVERY) + SIGN_EVERY) % SIGN_EVERY === 0) out.push(side(FURNITURE.highwaySign, STREET_COLOUR, 1));
+          // a sign stands where a light would (x + y is even there too), so that cell has the sign instead
+          const signHere = p.model === STRAIGHT && (((x + y) % SIGN_EVERY) + SIGN_EVERY) % SIGN_EVERY === 0;
+          if (signHere) out.push(side(FURNITURE.highwaySign, STREET_COLOUR, 1));
+          else if (lightHere) out.push(side(FURNITURE.highwayLight, WHITE));
         }
         continue;
       }

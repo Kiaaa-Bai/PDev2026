@@ -324,8 +324,8 @@ describe("CitySim kinds", () => {
   }
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
-  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8), zones (9), rivers (10) and the review fixes (11: two-cell runs, demand by zone, industry checks) change what a city grows", () => {
-    expect(CITY_RULES_VERSION).toBe(11);
+  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8), zones (9), rivers (10) the review fixes (11: two-cell runs, demand by zone, industry checks) and parks clustering with rivers kept joined (12) change what a city grows", () => {
+    expect(CITY_RULES_VERSION).toBe(12);
   });
 
   it("gives every lot a kind, stored apart from the time its house appears", () => {

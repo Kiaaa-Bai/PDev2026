@@ -163,7 +163,12 @@ async function boot() {
   const fingers = new Map<number, { x: number; y: number }>();
   // The city is the saved snapshot plus every record after it; with no snapshot, every day on disk.
   // this Mac's world: its seed decides where the rivers run, made on first launch and kept in the data folder
-  const cityCfg: CityConfig = { ...CITY, worldSeed: await invoke<number>("world_seed") };
+  // (if it cannot be had — say its file is broken — the city still starts, without rivers, and says why)
+  const worldSeed = await invoke<number>("world_seed").catch((e: unknown) => {
+    console.error("no world seed, so no rivers this time", e);
+    return undefined;
+  });
+  const cityCfg: CityConfig = { ...CITY, worldSeed };
   const saved = await loadCity(cityCfg);
   const city = saved ?? new CitySim(cityCfg);
   const sims: Sim[] = [city];

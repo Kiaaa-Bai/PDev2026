@@ -431,3 +431,12 @@ describe("a cluster neighbour's industry passes industry's own checks (review #4
     expect(kindForWith(beside, 0, 0.1, BAL, false, { clusterKind: "industrial", touchesIndustry: true })).toBe("industrial");
   });
 });
+
+describe("parks cluster as parks (minor fix)", () => {
+  const beside = { roadSides: 1, cornerRoads: false, lotsAlongRoad: 1 };
+  const BAL: Demand = { residents: 100, jobs: 100 };
+  it("copies a park neighbour once parks are unlocked, and otherwise decides as a home", () => {
+    expect(kindForWith(beside, 3_000_000, 0.3, BAL, false, { clusterKind: "park" })).toBe("park");
+    expect(kindForWith(beside, 0, 0.3, BAL, false, { clusterKind: "park" })).not.toBe("park");
+  });
+});
