@@ -25,13 +25,35 @@ function meander(seed: number, x: number): number {
   return a + (b - a) * t * t * (3 - 2 * t);
 }
 
+/**
+ * A seed's rivers never change, so each column's bend and each slot's centre and half-width are worked out once and
+ * kept (the same numbers as computing them afresh: caching changes nothing about which cells are water).
+ */
+interface Memo {
+  bend: Map<number, number>;
+  slot: Map<number, [centre: number, half: number]>;
+}
+const memos = new Map<number, Memo>();
+function memoOf(seed: number): Memo {
+  let m = memos.get(seed);
+  if (!m) memos.set(seed, (m = { bend: new Map(), slot: new Map() }));
+  return m;
+}
+
 function wet(seed: number, x: number, y: number, shift: number): boolean {
-  const v = y - meander(seed, x) - shift;
+  const memo = memoOf(seed);
+  let bend = memo.bend.get(x);
+  if (bend === undefined) memo.bend.set(x, (bend = meander(seed, x)));
+  const v = y - bend - shift;
   const slot = Math.floor(v / RIVER_SPACING);
   for (let k = slot - 1; k <= slot + 1; k++) {
-    const centre = k * RIVER_SPACING + RIVER_SPACING / 2 + (hash(seed, 1_000_003 + k) - 0.5) * 2 * JITTER;
-    const width = hash(seed, 2_000_003 + k) < 0.5 ? 2 : 3;
-    if (Math.abs(v - centre) < width / 2) return true;
+    let band = memo.slot.get(k);
+    if (!band) {
+      const centre = k * RIVER_SPACING + RIVER_SPACING / 2 + (hash(seed, 1_000_003 + k) - 0.5) * 2 * JITTER;
+      const width = hash(seed, 2_000_003 + k) < 0.5 ? 2 : 3;
+      memo.slot.set(k, (band = [centre, width / 2]));
+    }
+    if (Math.abs(v - band[0]) < band[1]) return true;
   }
   return false;
 }

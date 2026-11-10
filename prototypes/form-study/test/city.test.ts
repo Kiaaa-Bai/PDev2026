@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CITY_RULES_VERSION } from "../src/config";
 import { CitySim, cellKey, roadMaskAt, type CityConfig } from "../src/sims/city";
-import { JOBS, kindFor, neighboursAt, RESIDENTS, UNLOCKS, type Kind } from "../src/sims/kinds";
+import { JOB_CAPACITY, JOBS, kindFor, neighboursAt, RESIDENTS, UNLOCKS, type Kind } from "../src/sims/kinds";
 import { jobsOf, residentsOf } from "../src/sims/people";
 import { isWater } from "../src/sims/world";
 
@@ -324,8 +324,8 @@ describe("CitySim kinds", () => {
   }
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
-  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8), zones (9) and rivers (10) change what a city grows", () => {
-    expect(CITY_RULES_VERSION).toBe(10);
+  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8), zones (9), rivers (10) and the review fixes (11: two-cell runs, demand by zone, industry checks) change what a city grows", () => {
+    expect(CITY_RULES_VERSION).toBe(11);
   });
 
   it("gives every lot a kind, stored apart from the time its house appears", () => {
@@ -1325,16 +1325,18 @@ describe("CitySim zones", () => {
     }
   });
 
-  it("keeps commercial jobs near one per eight residents", () => {
+  it("keeps commercial jobs near one per eight residents, counted by what each lot is now", () => {
     const sim = grown(zoned);
     let shopJobs = 0;
     let residents = 0;
-    for (const { kind } of lotsOf(sim)) {
-      if (kind === "shop") shopJobs += JOBS.shop;
-      if (kind in RESIDENTS) residents += RESIDENTS[kind as keyof typeof RESIDENTS][2];
+    for (const { at } of lotsOf(sim)) {
+      const form = sim.lotForm(...at)!;
+      if (form === "shop") shopJobs += JOBS.shop;
+      if (form in RESIDENTS) residents += RESIDENTS[form as keyof typeof RESIDENTS][2];
     }
     expect(residents).toBeGreaterThan(200);
-    expect(shopJobs).toBeGreaterThanOrEqual(residents / 8 * 0.8);
+    expect(shopJobs).toBeGreaterThanOrEqual((residents / 8) * 0.8);
+    expect(sim.demand().residents).toBe(residents); // the city's own count agrees with what stands
   });
 
   it("makes no industry in a city with no homes yet", () => {
@@ -1477,5 +1479,143 @@ describe("CitySim rivers", () => {
     const sim = CitySim.restore(wet, snap)!;
     expect(sim.houseTier(0, y, 1e12)).toBe(2); // on the waterfront
     expect(sim.houseTier(2, y - 2, 1e12)).toBe(1); // across the street, dry
+  });
+});
+
+describe("review fixes", () => {
+  const zonedCfg: CityConfig = { ...cfg, zoning: true };
+  function cityOfRoad(c: CityConfig, road: [number, number, number][], at: { x: number; y: number; dir: 0 | 1 | 2 | 3 }): CitySim {
+    const snap = through(new CitySim(c).snapshot());
+    snap.road = road.map(([x, y, n]) => [cellKey(x, y), n]);
+    snap.roller = { ...at, progress: 0 };
+    return CitySim.restore(c, snap)!;
+  }
+
+  it("grades a side road off a highway dirt from its first cell (#1)", () => {
+    const a = cityOfRoad(cfg, Array.from({ length: 11 }, (_, i): [number, number, number] => [i - 5, 0, 5]), { x: -5, y: 0, dir: 0 });
+    swipe(a, 1000);
+    a.advanceTo(1000 + 10_500);
+    expect(a.gradeAt(0, 0)).toBe(5);
+    const snap = through(a.snapshot());
+    snap.roller = { x: 0, y: 0, dir: 1, progress: 0 };
+    snap.clock = null;
+    snap.lastInput = null;
+    const b = CitySim.restore(cfg, snap)!;
+    swipe(b, 1000);
+    b.advanceTo(1000 + 6_500);
+    for (let y = 1; y <= 6; y++) expect(b.gradeAt(0, y), `y = ${y}`).toBe(1);
+    expect(b.gradeAt(0, 0)).toBe(5);
+  });
+
+  it("counts a home its avenue turned into a shop as a shop in the city's demand (#2)", () => {
+    const c: CityConfig = { ...zonedCfg, lotChance: 0 };
+    const snap = through(new CitySim(c).snapshot());
+    snap.road = Array.from({ length: 10 }, (_, i): [string, number] => [cellKey(i, 0), 3]);
+    snap.grades = snap.road.map(([k]) => [k, 3]);
+    snap.lots = [[cellKey(5, 1), 0]];
+    snap.kinds = [[cellKey(5, 1), "house"]];
+    snap.rolls = [[cellKey(5, 1), 0.1]];
+    snap.roller = { x: 0, y: 0, dir: 0, progress: 0 };
+    const sim = CitySim.restore(c, snap)!;
+    expect(sim.demand()).toEqual({ residents: RESIDENTS.house[2], jobs: 0 });
+    swipe(sim, 1000);
+    sim.advanceTo(1000 + 9_500); // the row is driven a fourth time: an avenue
+    expect(sim.lotZone(5, 1)).toBe("commercial");
+    expect(sim.demand()).toEqual({ residents: 0, jobs: JOBS.shop });
+    expect(CitySim.restore(c, through(sim.snapshot()))!.demand()).toEqual(sim.demand());
+  });
+
+  describe("replay equals live with zones and rivers (#5)", () => {
+    const world: CityConfig = { ...cfg, zoning: true, worldSeed: 3, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
+    const headings = [PUSH.E, PUSH.E, PUSH.S, PUSH.W, PUSH.W, PUSH.N, PUSH.E, PUSH.S, PUSH.S, PUSH.W, PUSH.N, PUSH.N];
+    const swipesOf = (sim: CitySim, from: number, to: number, step?: number) => {
+      let t = 1000 + from * 4500;
+      for (let i = from; i < to; i++) {
+        const next = t + 2500 + (i % 3) * 2000;
+        if (step) for (let u = t; u < next; u += step) sim.advanceTo(u);
+        t = next;
+        swipe(sim, t, ...headings[(i * 5) % headings.length]);
+        sim.distance = 3_000_000;
+      }
+    };
+    const state = (sim: CitySim, t: number) => {
+      const cells = new Set([...sim.road.keys(), ...sim.lots.keys()]);
+      return {
+        demand: sim.demand(),
+        cells: [...cells].sort().map((k) => {
+          const [x, y] = k.split(",").map(Number);
+          return [k, sim.gradeAt(x, y), sim.lotZone(x, y) ?? null, sim.houseTier(x, y, t)];
+        }),
+      };
+    };
+    const fresh = () => {
+      const sim = new CitySim(world);
+      sim.distance = 3_000_000;
+      return sim;
+    };
+    it("restores mid-day to the same grades, zones, densities and demand as one unbroken run", () => {
+      const whole = fresh();
+      swipesOf(whole, 0, 120);
+      whole.advanceTo(2_000_000);
+      const first = fresh();
+      swipesOf(first, 0, 60);
+      const restored = CitySim.restore(world, through(first.snapshot()))!;
+      expect(restored).not.toBeNull();
+      swipesOf(restored, 60, 120);
+      restored.advanceTo(2_000_000);
+      expect(whole.lots.size).toBeGreaterThan(50);
+      expect(state(restored, 2_000_000)).toEqual(state(whole, 2_000_000));
+    });
+    it("grows the same zoned city whatever the frame rate", () => {
+      const a = fresh();
+      swipesOf(a, 0, 80, 16);
+      a.advanceTo(1_000_000);
+      const b = fresh();
+      swipesOf(b, 0, 80, 5000);
+      b.advanceTo(1_000_000);
+      expect(state(b, 1_000_000)).toEqual(state(a, 1_000_000));
+    });
+  });
+
+  it("gives a workplace as many jobs as its density holds, when asked at a time (#6)", () => {
+    const snap = through(new CitySim(zonedCfg).snapshot());
+    snap.road = [...Array.from({ length: 3 }, (_, i): [string, number] => [cellKey(i, 0), 1]), ...Array.from({ length: 3 }, (_, i): [string, number] => [cellKey(i + 10, 0), 1])];
+    snap.grades = snap.road.map(([k]) => [k, k.startsWith("1") && k !== "1,0" ? 4 : 2]);
+    snap.lots = [[cellKey(1, 1), 0], [cellKey(11, 1), 0]];
+    snap.kinds = [[cellKey(1, 1), "shop"], [cellKey(11, 1), "shop"]];
+    snap.rolls = [[cellKey(1, 1), 0.9], [cellKey(11, 1), 0.9]];
+    const sim = CitySim.restore(zonedCfg, snap)!;
+    const t = 1e12;
+    expect(sim.houseTier(1, 1, t)).toBe(1);
+    expect(sim.houseTier(11, 1, t)).toBe(3);
+    const at = (x: number) => jobsOf(sim, t).filter((j) => j.work[0] === x).length;
+    expect(at(1)).toBe(JOB_CAPACITY.shop[0]);
+    expect(at(11)).toBe(JOB_CAPACITY.shop[2]);
+    expect(JOB_CAPACITY.shop[2]).toBe(JOBS.shop); // demand still counts the full capacity
+    expect(jobsOf(sim).filter((j) => j.work[0] === 1).length).toBe(JOBS.shop); // no time: full capacity, as before
+  });
+});
+
+describe("the kept form matches the zone", () => {
+  it("draws every lot of a grown, zoned, rivered city as the zone it holds now", () => {
+    // short drives that keep coming back over the same streets, so some become avenues and highways
+    const world: CityConfig = { ...cfg, zoning: true, mergeBeside: true, worldSeed: 3, idleStopMs: 8000, slowMs: 2000, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
+    const sim = new CitySim(world);
+    sim.distance = 3_000_000;
+    const headings = [PUSH.E, PUSH.S, PUSH.W, PUSH.N];
+    let t = 1000;
+    for (let i = 0; i < 300; i++) {
+      t += 2500 + (i % 3) * 2000;
+      swipe(sim, t, ...headings[(i * 3) % headings.length]);
+      sim.distance = 3_000_000;
+    }
+    const zoneOfForm = (f: Kind) => (f === "shop" ? "commercial" : f === "house" || f === "row" || f === "detached" || f === "apartment" ? "residential" : f);
+    let rezoned = 0;
+    for (const k of sim.kinds.keys()) {
+      const [x, y] = k.split(",").map(Number);
+      expect(zoneOfForm(sim.lotForm(x, y)!), k).toBe(sim.lotZone(x, y));
+      if (sim.lotForm(x, y) !== sim.lotKind(x, y)) rezoned++;
+    }
+    expect(rezoned).toBeGreaterThan(0);
   });
 });

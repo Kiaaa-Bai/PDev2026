@@ -344,6 +344,20 @@ export function wheelZoomTarget(halfHeight: number, deltaY: number, deltaMode: n
   return deltaY === 0 ? null : wheelZoom(halfHeight, deltaY, deltaMode, pinch);
 }
 
+/**
+ * Zoomed out, a rebuild that only shows the city's own changes (a new cell paved, a house grown) waits this long after
+ * the last one: a wide layout takes tens of milliseconds, and the roller can pave 20 cells a second. Close up, and
+ * whenever the view itself moved, it rebuilds at once.
+ */
+export const REBUILD_EVERY_MS = 250;
+
+/** Whether the 3D view should rebuild its instances now (see REBUILD_EVERY_MS). */
+export function rebuildDue(o: { viewChanged: boolean; halfHeight: number; sinceLastMs: number }): boolean {
+  // the wait grows with the view: REBUILD_EVERY_MS up to a half-height of 15, a second at the widest (60)
+  const wait = REBUILD_EVERY_MS * Math.max(1, o.halfHeight / 15);
+  return o.viewChanged || o.halfHeight <= 2 * MIN_HALF_HEIGHT || o.sinceLastMs >= wait;
+}
+
 /** A zoomed-out view settles back to the close-up in this long. */
 export const EASE_BACK_MS = 600;
 
@@ -452,13 +466,21 @@ export function layoutCells(
   looks: Looks,
 ): Placement[] {
   const out: Placement[] = [];
+  // which cells are river, worked out once for the whole layout (each water piece looks at its four neighbours too)
+  let wet: ((x: number, y: number) => boolean) | undefined;
+  if (looks.water) {
+    const side = 2 * radius + 3;
+    const grid = new Uint8Array(side * side);
+    for (let gy = 0; gy < side; gy++) for (let gx = 0; gx < side; gx++) grid[gy * side + gx] = looks.water(cx - radius - 1 + gx, cy - radius - 1 + gy) ? 1 : 0;
+    wet = (x, y) => grid[(y - cy + radius + 1) * side + (x - cx + radius + 1)] === 1;
+  }
   for (let y = cy - radius; y <= cy + radius; y++) {
     for (let x = cx - radius; x <= cx + radius; x++) {
       if (has(x, y)) {
         const mask = (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) | (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
         const p = roadPiece(mask);
         // a bridge: the river runs on under the road
-        if (looks.water?.(x, y)) out.push(...waterAt(looks.water, x, y));
+        if (wet?.(x, y)) out.push(...waterAt(wet, x, y));
         const grade = looks.grade?.(x, y) || gradeOfPasses(looks.driven(x, y));
         const base = grade === 4 ? (FURNITURE.avenueCross[p.model] ?? p.model) : p.model;
         out.push({ model: base, x, y, turns: p.turns, scale: 1, colour: roadColour(grade), flat: grade <= 3 });
@@ -474,7 +496,7 @@ export function layoutCells(
           if (junction) out.push({ model: FURNITURE.trafficLight, x: x + LIGHT_INSET, y: y + LIGHT_INSET, turns: p.turns, scale: LIGHT_SCALE, colour: STREET_COLOUR });
         }
         // a straight span over water is a bridge: the kit's barrier rails along it (a highway has them everywhere)
-        if (grade < 5 && p.model === STRAIGHT && looks.water?.(x, y)) out.push({ model: FURNITURE.barrier(STRAIGHT)!, x, y, turns: p.turns, scale: 1, colour: WHITE });
+        if (grade < 5 && p.model === STRAIGHT && wet?.(x, y)) out.push({ model: FURNITURE.barrier(STRAIGHT)!, x, y, turns: p.turns, scale: 1, colour: WHITE });
         if (grade === 5) {
           const barrier = FURNITURE.barrier(p.model);
           if (barrier) out.push({ model: barrier, x, y, turns: p.turns, scale: 1, colour: WHITE });
@@ -483,9 +505,9 @@ export function layoutCells(
         }
         continue;
       }
-      if (looks.water) {
-        out.push(...waterAt(looks.water, x, y));
-        if (looks.water(x, y)) continue;
+      if (wet) {
+        out.push(...waterAt(wet, x, y));
+        if (wet(x, y)) continue;
       }
       const tier = tierAt(x, y);
       if (tier) out.push(...buildingPlacements(looks.kind(x, y) ?? "house", tier, x, y, houseTurns(has, x, y), looks.built(x, y)));

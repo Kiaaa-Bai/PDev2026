@@ -33,3 +33,10 @@ describe("runGrade", () => {
     expect(runGrade([4, 5, 1])).toBe(4);
   });
 });
+
+describe("runGrade on an even count", () => {
+  it("takes the lower middle, so a two-cell run off a busy road is graded by its new cell (review #1)", () => {
+    expect(runGrade([6, 1])).toBe(1);
+    expect(runGrade([1, 6, 6, 6])).toBe(5);
+  });
+});

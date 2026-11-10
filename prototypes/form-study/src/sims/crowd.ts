@@ -32,7 +32,7 @@ export interface Population {
  */
 export function buildPopulation(sim: CityLots, t: number, seed: number): Population {
   const residents = residentsOf(sim, t);
-  const jobs = jobsOf(sim);
+  const jobs = jobsOf(sim, t);
   const given = assignJobs(residents, jobs, seed);
   const where = new Map<number, Cell>();
   for (const j of jobs) where.set(j.id, j.work);

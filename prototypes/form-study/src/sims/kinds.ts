@@ -41,7 +41,18 @@ export const RESIDENTS: Record<"house" | "row" | "detached" | "apartment", reado
   apartment: [2, 4, 20],
 };
 
-/** How many jobs a workplace holds, whatever its age. */
+/**
+ * How many jobs a workplace holds at each density (low, medium, high). The city's demand counts the high one (`JOBS`),
+ * as it counts homes at their tier-3 capacity, so its balance does not drift as buildings grow.
+ */
+export const JOB_CAPACITY: Record<"shop" | "office" | "landmark" | "industrial", readonly [number, number, number]> = {
+  shop: [1, 2, 4],
+  office: [4, 8, 12],
+  landmark: [30, 30, 30],
+  industrial: [5, 10, 15],
+};
+
+/** How many jobs a workplace holds at full density. */
 export const JOBS: Record<"shop" | "office" | "landmark" | "industrial", number> = { shop: 4, office: 12, landmark: 30, industrial: 15 };
 
 /** The whole city's residents and jobs, each counted at tier-3 capacity so the sum does not drift as houses grow. */
@@ -151,7 +162,7 @@ export function kindFor(n: Neighbours, distance: number, roll: number, demand: D
   if (cluster) {
     if (roll < CLUSTER_CHANCE) {
       const k = cluster;
-      if (isWorkplaceKind(k) && (k !== "industrial" || !ctx.nearHome)) return k;
+      if (isWorkplaceKind(k) && (k !== "industrial" || industryAllowed(ctx))) return k;
       home = !isWorkplaceKind(k);
       r = roll / CLUSTER_CHANCE;
     } else r = (roll - CLUSTER_CHANCE) / (1 - CLUSTER_CHANCE);
@@ -174,10 +185,13 @@ export function kindFor(n: Neighbours, distance: number, roll: number, demand: D
 
 const isWorkplaceKind = (k: Kind): boolean => k === "shop" || k === "office" || k === "industrial";
 
+/** Industry may stand here: in the outer ring or next to industry, with no home near and off the waterfront. */
+const industryAllowed = (ctx: LotContext): boolean => (ctx.outer || ctx.touchesIndustry) === true && !ctx.nearHome && !ctx.waterfront;
+
 /** Which workplace: a shop where shops are short, at a corner or beside an avenue; industry in the outer ring (or next to industry) away from homes; otherwise an office. */
 function workplaceKind(n: Neighbours, besideAvenue: boolean, ctx: LotContext): Kind {
   if (ctx.commercialShort || n.cornerRoads || besideAvenue) return "shop";
-  if ((ctx.outer || ctx.touchesIndustry) && !ctx.nearHome && !ctx.waterfront) return "industrial";
+  if (industryAllowed(ctx)) return "industrial";
   return "office";
 }
 

@@ -1,3 +1,4 @@
+import { JOB_CAPACITY } from "../src/sims/kinds";
 import { describe, expect, it } from "vitest";
 import {
   buildFleet,
@@ -120,13 +121,13 @@ describe("buildPopulation", () => {
     const sim = city([
       [0, 1, "house"], // 2 residents at tier 1
       [1, 1, "row"], // 3
-      [5, 1, "shop"], // 4 jobs
+      [5, 1, "shop"], // a small shop at tier 1: 1 job (JOB_CAPACITY)
       [9, 1, "park"],
     ]);
     const pop = buildPopulation(sim, 0, SEED);
     expect(pop.people).toHaveLength(5);
     expect(new Set(pop.people.map((p) => p.id)).size).toBe(5);
-    expect(pop.people.filter((p) => p.work).length).toBe(4);
+    expect(pop.people.filter((p) => p.work).length).toBe(JOB_CAPACITY.shop[0]);
     for (const p of pop.people) if (p.work) expect(p.work).toEqual([5, 1]);
     expect(pop.places.sort()).toEqual([[5, 1], [9, 1]]);
   });

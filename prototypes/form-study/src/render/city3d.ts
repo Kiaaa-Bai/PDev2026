@@ -19,6 +19,7 @@ import {
   MIN_HALF_HEIGHT,
   MODEL_NAMES,
   panDelta,
+  rebuildDue,
   ROLLER,
   VIEW_HOLD_MS,
   ROUND,
@@ -189,6 +190,8 @@ export class CityView3D {
   /** What the instances were last built for (roller cell, city version, 5 s bucket, radius), and a hash of what that put on screen. */
   private builtFor = "";
   private builtKey: number | null = null;
+  /** When (the clock `update` is given) the instances were last rebuilt. */
+  private builtAt = -Infinity;
   /** The radius, in cells, the instances were last built out to. */
   private builtRadius = 0;
   /** Tiles visible above and below the middle of the view now; wheel or pinch changes it, and it eases back by itself. */
@@ -651,9 +654,12 @@ export class CityView3D {
     // Check the surroundings when the middle of the view has moved a few cells, the city changed, the view needs
     // another radius, or every 5 s (a house can age into a bigger one). It only counts as a change if
     // what is drawn differs.
-    const cellSig = `${Math.round(c.x / 4)},${Math.round(c.y / 4)},${this.sim.version},${Math.floor(t / 5000)},${radius}`;
-    if (cellSig !== this.builtFor) {
+    const viewSig = `${Math.round(c.x / 4)},${Math.round(c.y / 4)},${radius}`;
+    const cellSig = `${viewSig},${this.sim.version},${Math.floor(t / 5000)}`;
+    // a change in the city alone waits a moment when zoomed out (rebuildDue), so a wide layout is not redone 20 times a second
+    if (cellSig !== this.builtFor && rebuildDue({ viewChanged: !this.builtFor.startsWith(viewSig + ","), halfHeight: this.halfHeight, sinceLastMs: now - this.builtAt })) {
       this.builtFor = cellSig;
+      this.builtAt = now;
       if (this.rebuild(t, radius, c)) changed = true;
     }
     // The traffic is asked at every frame; it reports whether anybody moved or came or went. Its heavy work is in tasks

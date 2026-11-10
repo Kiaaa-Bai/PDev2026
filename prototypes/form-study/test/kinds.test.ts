@@ -373,7 +373,7 @@ describe("kindFor with the lot's surroundings (zones)", () => {
 
   it("follows its neighbour along the street most of the time", () => {
     expect(kindForWith(beside, 0, 0.3, BAL, false, { clusterKind: "office" })).toBe("office");
-    expect(kindForWith(beside, 0, 0.59, BAL, false, { clusterKind: "industrial" })).toBe("industrial");
+    expect(kindForWith(beside, 0, 0.59, BAL, false, { clusterKind: "industrial", outer: true })).toBe("industrial");
     // a neighbour's industry is not copied next to a home
     expect(kindForWith(beside, 0, 0.3, BAL, false, { clusterKind: "industrial", nearHome: true })).not.toBe("industrial");
     // a home neighbour makes it a home
@@ -418,5 +418,16 @@ describe("zoneOf and zoneNow", () => {
     expect(zoneNow("residential", 0.1, 3)).toBe("residential");
     expect(zoneNow("industrial", 0.1, 5)).toBe("industrial");
     expect(zoneNow("park", 0.1, 5)).toBe("park");
+  });
+});
+
+describe("a cluster neighbour's industry passes industry's own checks (review #4)", () => {
+  const beside = { roadSides: 1, cornerRoads: false, lotsAlongRoad: 1 };
+  const BAL: Demand = { residents: 100, jobs: 100 };
+  it("is not copied onto the waterfront, nor outside the ring away from industry", () => {
+    expect(kindForWith(beside, 0, 0.1, BAL, false, { clusterKind: "industrial", outer: true, waterfront: true })).not.toBe("industrial");
+    expect(kindForWith(beside, 0, 0.1, BAL, false, { clusterKind: "industrial" })).not.toBe("industrial");
+    expect(kindForWith(beside, 0, 0.1, BAL, false, { clusterKind: "industrial", outer: true })).toBe("industrial");
+    expect(kindForWith(beside, 0, 0.1, BAL, false, { clusterKind: "industrial", touchesIndustry: true })).toBe("industrial");
   });
 });

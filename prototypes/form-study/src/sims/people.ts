@@ -7,7 +7,7 @@
 // `routeTrips` (cache them until the road changes) and asks `positionAt` where each one is now.
 
 import type { CitySim, Dir } from "./city";
-import { JOBS, RESIDENTS } from "./kinds";
+import { JOBS, RESIDENTS, JOB_CAPACITY } from "./kinds";
 
 export { JOBS, RESIDENTS };
 
@@ -87,7 +87,7 @@ export function residentsOf(sim: CityLots, t: number): Resident[] {
  * 4, an office 12, the landmark 30). Counts lots that exist, as `CitySim.demand` does, so a workplace whose building
  * is a few seconds from appearing already has people assigned to it.
  */
-export function jobsOf(sim: CityLots): Job[] {
+export function jobsOf(sim: CityLots, t?: number): Job[] {
   const out: Job[] = [];
   for (const [key, kind] of sim.kinds) {
     const [x, y] = cellOf(key);
@@ -96,7 +96,9 @@ export function jobsOf(sim: CityLots): Job[] {
     const as = zone === "commercial" ? "shop" : zone === "office" ? "office" : kind;
     if (!isWorkplace(as)) continue;
     const base = cellId(x, y) * SLOTS;
-    for (let i = 0; i < JOBS[as]; i++) out.push({ id: base + i, work: [x, y] });
+    // at a time, as many as the building's density holds (a lot whose building is still to come counts as low)
+    const n = t === undefined ? JOBS[as] : JOB_CAPACITY[as][Math.max(1, sim.houseTier(x, y, t)) - 1];
+    for (let i = 0; i < n; i++) out.push({ id: base + i, work: [x, y] });
   }
   return out;
 }

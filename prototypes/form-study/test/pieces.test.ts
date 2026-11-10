@@ -39,6 +39,8 @@ import {
   SHOP_POOL,
   viewRadius,
   VIEW_HOLD_MS,
+  rebuildDue,
+  REBUILD_EVERY_MS,
   WATER,
   WATER_COLOUR,
   waterPiece,
@@ -1073,5 +1075,18 @@ describe("smooth rivers", () => {
     const square = lay((_, y) => y === 0);
     const rounded = square.map((p) => (p.x === 1 ? { ...p, model: waterPiece(ROUND.NE) } : p));
     expect(layoutKey(rounded)).not.toBe(layoutKey(square));
+  });
+});
+
+describe("rebuildDue (review #3)", () => {
+  it("rebuilds at once when the view moved or close up, but at most every REBUILD_EVERY_MS for city changes zoomed out", () => {
+    expect(REBUILD_EVERY_MS).toBe(250);
+    expect(rebuildDue({ viewChanged: true, halfHeight: 60, sinceLastMs: 0 })).toBe(true);
+    expect(rebuildDue({ viewChanged: false, halfHeight: MIN_HALF_HEIGHT, sinceLastMs: 0 })).toBe(true);
+    expect(rebuildDue({ viewChanged: false, halfHeight: 60, sinceLastMs: 100 })).toBe(false);
+    // the wider the view, the longer it waits: a layout at the widest zoom takes ~60 ms, so at most once a second there
+    expect(rebuildDue({ viewChanged: false, halfHeight: 15, sinceLastMs: 250 })).toBe(true);
+    expect(rebuildDue({ viewChanged: false, halfHeight: 60, sinceLastMs: 500 })).toBe(false);
+    expect(rebuildDue({ viewChanged: false, halfHeight: 60, sinceLastMs: 1000 })).toBe(true);
   });
 });

@@ -30,8 +30,11 @@ export function runThrough(has: (x: number, y: number) => boolean, x: number, y:
   return out;
 }
 
-/** The grade of a run: that of the median of its cells' pass counts (the upper middle one for an even count). */
+/**
+ * The grade of a run: that of the median of its cells' pass counts, the lower middle one for an even count — so the
+ * first new cell off a busy road (a two-cell run with the junction) is graded by itself, not by the junction.
+ */
 export function runGrade(passes: readonly number[]): Grade {
   const sorted = [...passes].sort((a, b) => a - b);
-  return gradeOfPasses(sorted[Math.floor(sorted.length / 2)]);
+  return gradeOfPasses(sorted[Math.floor((sorted.length - 1) / 2)]);
 }

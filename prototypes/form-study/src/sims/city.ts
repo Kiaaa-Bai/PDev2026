@@ -117,6 +117,8 @@ export class CitySim implements Sim {
   private rolls = new Map<string, number>();
   /** Jobs in shops, counted at full capacity like `need`. */
   private shopJobs = 0;
+  /** The form each lot is counted as in the demand: its kind, or the shop or office its road rezoned it to. */
+  private counted = new Map<string, Kind>();
   /** Count and sums over the homes' cells (x, y, x² + y²): the centroid of homes and their spread, exactly. */
   private homes = { n: 0, x: 0, y: 0, sq: 0 };
   /** Each road cell's grade: the highest its straight runs have ever reached, so it never falls (see `regrade`). */
@@ -228,7 +230,7 @@ export class CitySim implements Sim {
     for (const [k, kind] of s.kinds) {
       sim.kinds.set(k, kind);
       const [x, y] = k.split(",").map(Number);
-      sim.count(kind, 1, x, y);
+      sim.countLot(k, x, y);
     }
     sim.landmarkPlaced = s.landmark;
     sim.roller.x = s.roller.x;
@@ -312,13 +314,29 @@ export class CitySim implements Sim {
       if (run.length < 2) continue;
       onRun = true;
       const g = runGrade(run.map(([cx, cy]) => this.road.get(cellKey(cx, cy)) ?? 0));
-      for (const [cx, cy] of run) this.raiseGrade(cellKey(cx, cy), g);
+      for (const [cx, cy] of run) this.raiseGrade(cx, cy, g);
     }
-    if (!onRun) this.raiseGrade(cellKey(x, y), gradeOfPasses(this.road.get(cellKey(x, y)) ?? 0));
+    if (!onRun) this.raiseGrade(x, y, gradeOfPasses(this.road.get(cellKey(x, y)) ?? 0));
   }
 
-  private raiseGrade(k: string, g: Grade): void {
-    if (g > (this.grades.get(k) ?? 0)) this.grades.set(k, g);
+  /**
+   * Raises the cell's grade to `g` if that is higher. With `zoning`, a road becoming an avenue or a highway can rezone
+   * the lots beside it, so those (at most four) are counted again in the city's demand.
+   */
+  private raiseGrade(x: number, y: number, g: Grade): void {
+    const k = cellKey(x, y);
+    const was = this.grades.get(k) ?? 0;
+    if (g <= was) return;
+    this.grades.set(k, g);
+    if (!this.cfg.zoning || !((was < 4 && g >= 4) || (was < 5 && g >= 5))) return;
+    for (let d = 0; d < 4; d++) {
+      const lx = x + DX[d];
+      const ly = y + DY[d];
+      const lk = cellKey(lx, ly);
+      if (!this.kinds.has(lk) || this.counted.get(lk) === this.formNow(lx, ly)) continue;
+      this.uncountLot(lk, lx, ly);
+      this.countLot(lk, lx, ly);
+    }
   }
 
   /** The kind of building on the lot at (x, y), or undefined where there is no lot. */
@@ -369,8 +387,16 @@ export class CitySim implements Sim {
     return false;
   }
 
-  /** What the lot at (x, y) is drawn as: its kind, or a shop or an office where its road rezoned a home. */
+  /**
+   * What the lot at (x, y) is drawn as: its kind, or a shop or an office where its road rezoned a home. Read from the
+   * form it is counted as, which `raiseGrade` keeps up to date; `formNow` works it out from the roads.
+   */
   lotForm(x: number, y: number): Kind | undefined {
+    const k = cellKey(x, y);
+    return this.counted.get(k) ?? this.formNow(x, y);
+  }
+
+  private formNow(x: number, y: number): Kind | undefined {
     const kind = this.kinds.get(cellKey(x, y));
     if (kind === undefined) return undefined;
     const zone = this.lotZone(x, y);
@@ -535,7 +561,7 @@ export class CitySim implements Sim {
     const flattened = this.kinds.get(k);
     if (flattened !== undefined) {
       if (flattened === "landmark") this.landmarkPlaced = false;
-      this.count(flattened, -1, x, y);
+      this.uncountLot(k, x, y);
     }
     this.kinds.delete(k);
     this.rolls.delete(k);
@@ -555,7 +581,7 @@ export class CitySim implements Sim {
       const kind = this.kindOfNewLot(lx, ly, roll);
       this.kinds.set(nk, kind);
       this.rolls.set(nk, roll);
-      this.count(kind, 1, lx, ly);
+      this.countLot(nk, lx, ly);
       this.lots.set(nk, ready);
     }
     this.version++;
@@ -645,6 +671,22 @@ export class CitySim implements Sim {
     let best = 0;
     for (let d = 0; d < 4; d++) best = Math.max(best, this.gradeAt(x + DX[d], y + DY[d]));
     return zoneNow(born, this.rolls.get(k) ?? 0, best);
+  }
+
+  /** Counts the lot at (x, y) in the demand as what it is now (`lotForm`), and remembers that. */
+  private countLot(k: string, x: number, y: number): void {
+    const form = this.formNow(x, y);
+    if (form === undefined) return;
+    this.counted.set(k, form);
+    this.count(form, 1, x, y);
+  }
+
+  /** Takes the lot at (x, y) out of the demand, as what it was counted as. */
+  private uncountLot(k: string, x: number, y: number): void {
+    const form = this.counted.get(k);
+    if (form === undefined) return;
+    this.counted.delete(k);
+    this.count(form, -1, x, y);
   }
 
   /** Adds (`sign` 1) or takes away (-1) a lot of `kind` at (x, y) from the residents and jobs, the shops and the homes. */
