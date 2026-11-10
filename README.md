@@ -12,3 +12,4 @@ something out of it while you work.
 - [Week 3 — Pitch deck](week03/)
 - [Week 5 — Prototypes](week05/)
 - [Week 7 — The city, in 3D](week07/)
+- [Week 8 — Three decisions](week08/)
