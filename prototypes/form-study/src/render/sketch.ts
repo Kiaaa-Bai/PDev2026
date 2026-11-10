@@ -1,11 +1,12 @@
 // The docked window's flat sketch of the city: the same area around the roller as the 3D close-up, in the same diamond
-// projection, so opening the window reads as zooming into the same place. Roads are lines shaded by tier, lots small
+// projection, so opening the window reads as zooming into the same place. Roads are lines shaded by grade, lots small
 // squares coloured by kind, the roller a dot; no people or cars. `sketchItems` (what to draw) is pure, for node tests.
 
 import { EDGE_H } from "../modes";
 import { cellKey, type CitySim } from "../sims/city";
 import type { Kind } from "../sims/kinds";
-import { LANE_COLOUR, ROOF_COLOURS, roadTier, STREET_COLOUR, WINDOW_LIT } from "./looks";
+import { gradeOfPasses, type Grade } from "../sims/grades";
+import { LANE_COLOUR, ROOF_COLOURS, STREET_COLOUR, WINDOW_LIT } from "./looks";
 import { MIN_HALF_HEIGHT } from "./pieces";
 
 /** Two neighbouring road cells, joined: listed once, from the west or north one. A road with no neighbour is joined to itself. */
@@ -14,8 +15,8 @@ export interface SketchRoad {
   y: number;
   nx: number;
   ny: number;
-  /** The lesser of the two cells' tiers: a lane meeting a street is drawn as the lane. */
-  tier: 1 | 2 | 3;
+  /** The lesser of the two cells' grades (1 dirt to 5 highway): a dirt road meeting a street is drawn as dirt. */
+  grade: Grade;
 }
 
 export interface SketchLot {
@@ -42,6 +43,8 @@ export function sketchItems(sim: CitySim, centre: { x: number; y: number }, radi
   const cy = Math.round(centre.y);
   const inside = (x: number, y: number) => Math.abs(x - cx) <= radius && Math.abs(y - cy) <= radius;
   const driven = (x: number, y: number) => sim.road.get(cellKey(x, y));
+  // the city's grade, or, for a road it has not graded (a city made from road counts alone), that of its passes
+  const gradeOf = (x: number, y: number, n: number): Grade => sim.gradeAt(x, y) || gradeOfPasses(n);
   const roads: SketchRoad[] = [];
   const lots: SketchLot[] = [];
   for (let y = cy - radius; y <= cy + radius; y++) {
@@ -51,15 +54,15 @@ export function sketchItems(sim: CitySim, centre: { x: number; y: number }, radi
         if (sim.lots.has(cellKey(x, y))) lots.push({ x, y, kind: sim.lotKind(x, y) ?? "house" });
         continue;
       }
-      const tier = roadTier(n);
+      const grade = gradeOf(x, y, n);
       const join = (nx: number, ny: number, m: number) =>
-        roads.push({ x, y, nx, ny, tier: Math.min(tier, roadTier(m)) as 1 | 2 | 3 });
+        roads.push({ x, y, nx, ny, grade: Math.min(grade, gradeOf(nx, ny, m)) as Grade });
       const east = driven(x + 1, y);
       const south = driven(x, y + 1);
       if (east !== undefined && inside(x + 1, y)) join(x + 1, y, east);
       if (south !== undefined && inside(x, y + 1)) join(x, y + 1, south);
       const alone = east === undefined && south === undefined && driven(x - 1, y) === undefined && driven(x, y - 1) === undefined;
-      if (alone) roads.push({ x, y, nx: x, ny: y, tier });
+      if (alone) roads.push({ x, y, nx: x, ny: y, grade });
     }
   }
   return { roads, lots, roller: sim.rollerAt() };
@@ -86,10 +89,15 @@ export const KIND_COLOURS: Record<Kind, number> = {
   landmark: WINDOW_LIT,
 };
 
-const DAY = { ground: 0xe6ecd9, roads: [LANE_COLOUR, STREET_COLOUR, 0x474b5c], roller: 0xf2b705, outline: 0x2a2a2a };
-const NIGHT = { ground: 0x161b28, roads: [0x8f7f5c, 0x8a90a8, 0xc4c9d8], roller: 0xffd27a, outline: 0x000000 };
-/** Line widths for lanes, streets and avenues, in points. */
-const ROAD_WIDTH = [1.5, 2.5, 3.5];
+/** Road lines by grade (dirt, street, lit street, avenue, highway): darker and wider by day, lighter by night. */
+export const SKETCH_ROADS = {
+  day: [LANE_COLOUR, 0x8a8fa3, STREET_COLOUR, 0x474b5c, 0x2c2f3b],
+  night: [0x8f7f5c, 0x8a90a8, 0xa8adc2, 0xc4c9d8, 0xe2e5ee],
+  /** In points. */
+  width: [1.5, 2, 2.5, 3.5, 4.5],
+} as const;
+const DAY = { ground: 0xe6ecd9, roads: SKETCH_ROADS.day, roller: 0xf2b705, outline: 0x2a2a2a };
+const NIGHT = { ground: 0x161b28, roads: SKETCH_ROADS.night, roller: 0xffd27a, outline: 0x000000 };
 /** A lot's square, as a share of its cell. */
 const LOT_SIZE = 0.55;
 
@@ -110,12 +118,12 @@ export function drawSketch(ctx: CanvasRenderingContext2D, items: SketchItems, op
   const sy = (x: number, y: number) => (x - rx + (y - ry)) * (K / 2);
 
   ctx.lineCap = "round";
-  for (const tier of [1, 2, 3] as const) {
-    ctx.strokeStyle = css(look.roads[tier - 1]);
-    ctx.lineWidth = ROAD_WIDTH[tier - 1];
+  for (const grade of [1, 2, 3, 4, 5] as const) {
+    ctx.strokeStyle = css(look.roads[grade - 1]);
+    ctx.lineWidth = SKETCH_ROADS.width[grade - 1];
     ctx.beginPath();
     for (const r of items.roads) {
-      if (r.tier !== tier) continue;
+      if (r.grade !== grade) continue;
       ctx.moveTo(sx(r.x, r.y), sy(r.x, r.y));
       ctx.lineTo(sx(r.nx, r.ny), sy(r.nx, r.ny));
     }

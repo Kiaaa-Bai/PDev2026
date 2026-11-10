@@ -85,6 +85,9 @@ async function loadModel(kit: Kit, path: string): Promise<Model> {
   return { geo, mat: new THREE.MeshLambertMaterial({ map }), map };
 }
 
+/** The mesh bucket of a road piece drawn with a flat kerb: its model name with this after it. */
+const FLAT_SUFFIX = "#flat";
+
 /** Tiles visible above and below the roller when close up, which is where the view rests. */
 const DEFAULT_HALF_HEIGHT = MIN_HALF_HEIGHT;
 const PIXEL_RATIO = 2;
@@ -248,6 +251,22 @@ export class CityView3D {
     for (const m of suburban) patchPalette(m.mat, roofTexel, this.night);
     for (const m of of("commercial/")) patchWindows(m.mat, this.night);
     for (const m of of("roads/")) patchAsphalt(m.mat);
+  }
+
+  /**
+   * The model a mesh bucket draws: a loaded model, or for "<road model>#flat" that road's geometry with a material of its
+   * own whose kerb takes the instance colour (made once, on first use).
+   */
+  private modelFor(bucket: string): Model {
+    const known = this.models.get(bucket);
+    if (known) return known;
+    if (!bucket.endsWith(FLAT_SUFFIX)) throw new Error(`no model ${bucket}`);
+    const road = this.models.get(bucket.slice(0, -FLAT_SUFFIX.length))!;
+    const mat = road.mat.clone();
+    patchAsphalt(mat, true);
+    const flat: Model = { geo: road.geo, mat, map: road.map };
+    this.models.set(bucket, flat);
+    return flat;
   }
 
   /** An instanced mesh of `capacity` glow discs, none placed yet. */
@@ -508,6 +527,7 @@ export class CityView3D {
       driven: (x, y) => this.sim.road.get(cellKey(x, y)) ?? 0,
       built: (x, y) => this.sim.lots.get(cellKey(x, y)) ?? 0,
       kind: (x, y) => this.sim.lotKind(x, y),
+      grade: (x, y) => this.sim.gradeAt(x, y),
     };
     const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), radius, looks);
     this.builtRadius = radius;
@@ -520,8 +540,10 @@ export class CityView3D {
     const spin = [0, 1, 2, 3].map((k) => new THREE.Quaternion().setFromAxisAngle(up, (k * Math.PI) / 2));
     for (const p of placed) {
       const m = new THREE.Matrix4().compose(new THREE.Vector3(p.x, 0, p.y), spin[p.turns], new THREE.Vector3(p.scale, p.scale, p.scale));
-      let list = buckets.get(p.model);
-      if (!list) buckets.set(p.model, (list = []));
+      // a road piece with a flat kerb is drawn by its own mesh, whose material paints the kerb in the asphalt colour
+      const bucket = p.flat ? p.model + FLAT_SUFFIX : p.model;
+      let list = buckets.get(bucket);
+      if (!list) buckets.set(bucket, (list = []));
       list.push({ m, colour: p.colour });
     }
     this.placeGlow(placed);
@@ -535,7 +557,7 @@ export class CityView3D {
           this.scene.remove(mesh);
           mesh.dispose();
         }
-        const model = this.models.get(name)!;
+        const model = this.modelFor(name);
         mesh = new THREE.InstancedMesh(model.geo, model.mat, Math.max(64, list.length * 2));
         mesh.frustumCulled = false;
         this.meshes.set(name, mesh);

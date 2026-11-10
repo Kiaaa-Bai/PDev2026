@@ -25,6 +25,8 @@ export const ROOF_TEXEL = { x: 40, y: 160 } as const;
  * the top of the slab and one for its edge. The kerb and the markings read other blocks.
  */
 export const ASPHALT_BLOCK = { x: 128, y: 384, w: 64, h: 128 } as const;
+/** The kerb's block in the roads palette: the road models sample its top, side and gutter at (240, 268 / 320 / 371). */
+export const KERB_BLOCK = { x: 224, y: 256, w: 32, h: 128 } as const;
 
 /** The window glass's block of the palette (the colormap of suburban and commercial models alike), in pixels. */
 export const WINDOW_BLOCK = { x: 352, y: 128, w: 32, h: 128 } as const;
@@ -129,28 +131,35 @@ const ASPHALT = /* glsl */ `
 #endif
 `;
 
+/** With a flat kerb, the kerb's block takes the instance colour as well, so the road shows no kerb. */
+const FLAT_KERB = /* glsl */ `
+#ifdef USE_COLOR
+	if ( all( greaterThanEqual( vMapUv, kerbBlock.xy ) ) && all( lessThan( vMapUv, kerbBlock.zw ) ) ) {
+		sampledDiffuseColor.rgb = vColor.rgb;
+	}
+#endif
+`;
+
+const uvBlock = (b: { x: number; y: number; w: number; h: number }) =>
+  new THREE.Vector4(b.x / PALETTE_SIZE, b.y / PALETTE_SIZE, (b.x + b.w) / PALETTE_SIZE, (b.y + b.h) / PALETTE_SIZE);
+
 /**
  * Makes a road material draw its asphalt in each instance's colour (`setColorAt`) and everything else, the
  * kerb and the markings, as it is in the palette: the instance colour is not multiplied into them as it is on
  * other models. The way `patchPalette` does for a roof.
  */
-export function patchAsphalt(material: THREE.MeshLambertMaterial): void {
+export function patchAsphalt(material: THREE.MeshLambertMaterial, flatKerb = false): void {
   if (!MAP.includes(SAMPLE_END)) throw new Error("this Three.js version's map_fragment has changed; palette patch needs updating");
-  const mapFragment = MAP.replace(SAMPLE_END, ASPHALT + SAMPLE_END);
-  const asphaltBlock = new THREE.Vector4(
-    ASPHALT_BLOCK.x / PALETTE_SIZE,
-    ASPHALT_BLOCK.y / PALETTE_SIZE,
-    (ASPHALT_BLOCK.x + ASPHALT_BLOCK.w) / PALETTE_SIZE,
-    (ASPHALT_BLOCK.y + ASPHALT_BLOCK.h) / PALETTE_SIZE,
-  );
+  const mapFragment = MAP.replace(SAMPLE_END, ASPHALT + (flatKerb ? FLAT_KERB : "") + SAMPLE_END);
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.asphaltBlock = { value: asphaltBlock };
+    shader.uniforms.asphaltBlock = { value: uvBlock(ASPHALT_BLOCK) };
+    if (flatKerb) shader.uniforms.kerbBlock = { value: uvBlock(KERB_BLOCK) };
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nuniform vec4 asphaltBlock;")
+      .replace("#include <common>", "#include <common>\nuniform vec4 asphaltBlock;" + (flatKerb ? "\nuniform vec4 kerbBlock;" : ""))
       .replace("#include <map_fragment>", mapFragment)
       .replace("#include <color_fragment>", "");
   };
-  material.customProgramCacheKey = () => "palette-asphalt";
+  material.customProgramCacheKey = () => (flatKerb ? "palette-asphalt-flat-kerb" : "palette-asphalt");
 }
 
 /**

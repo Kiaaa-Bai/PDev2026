@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CITY } from "../src/config";
 import { cellKey, CitySim } from "../src/sims/city";
 import type { Kind } from "../src/sims/kinds";
-import { sketchItems } from "../src/render/sketch";
+import { sketchItems, SKETCH_ROADS } from "../src/render/sketch";
 
 /** A city with exactly these roads (cell → times driven) and lots (cell → kind), and the roller at rest at (0, 0). */
 function cityOf(roads: [number, number, number][], lots: [number, number, Kind][]): CitySim {
@@ -18,7 +18,7 @@ function cityOf(roads: [number, number, number][], lots: [number, number, Kind][
 const byCell = <T extends { x: number; y: number }>(list: T[]) => [...list].sort((a, b) => a.x - b.x || a.y - b.y);
 
 describe("sketchItems", () => {
-  it("lists only cells within the radius, roads joined to their neighbours with their tier, lots with their kind", () => {
+  it("lists only cells within the radius, roads joined to their neighbours with their grade, lots with their kind", () => {
     const sim = cityOf(
       [
         [0, 0, 1], // a lane
@@ -41,11 +41,11 @@ describe("sketchItems", () => {
     expect(byCell(items.roads)).toEqual(
       byCell([
         // each pair of neighbours once, west or north end first; a lane joined to anything is drawn as a lane
-        { x: 0, y: 0, nx: 1, ny: 0, tier: 1 },
-        { x: 1, y: 0, nx: 2, ny: 0, tier: 3 },
-        { x: 0, y: 0, nx: 0, ny: 1, tier: 1 },
+        { x: 0, y: 0, nx: 1, ny: 0, grade: 1 },
+        { x: 1, y: 0, nx: 2, ny: 0, grade: 3 },
+        { x: 0, y: 0, nx: 0, ny: 1, grade: 1 },
         // a road with no neighbour is a segment to itself, so it still shows
-        { x: -2, y: -2, nx: -2, ny: -2, tier: 2 },
+        { x: -2, y: -2, nx: -2, ny: -2, grade: 2 },
       ]),
     );
     expect(byCell(items.lots)).toEqual(
@@ -74,7 +74,21 @@ describe("sketchItems", () => {
       [[20, 21, "house"]],
     );
     const items = sketchItems(sim, { x: 20, y: 20 }, 3);
-    expect(items.roads).toEqual([{ x: 20, y: 20, nx: 21, ny: 20, tier: 1 }]);
+    expect(items.roads).toEqual([{ x: 20, y: 20, nx: 21, ny: 20, grade: 1 }]);
     expect(items.lots).toEqual([{ x: 20, y: 21, kind: "house" }]);
+  });
+});
+
+describe("sketch road looks by grade", () => {
+  const lum = (c: number) => 0.299 * ((c >> 16) & 255) + 0.587 * ((c >> 8) & 255) + 0.114 * (c & 255);
+  it("has a shade and a width for each of the five grades: darker and wider by day as the grade rises, lighter by night", () => {
+    expect(SKETCH_ROADS.day).toHaveLength(5);
+    expect(SKETCH_ROADS.night).toHaveLength(5);
+    expect(SKETCH_ROADS.width).toHaveLength(5);
+    for (let g = 1; g < 5; g++) {
+      expect(lum(SKETCH_ROADS.day[g]), `day ${g + 1}`).toBeLessThan(lum(SKETCH_ROADS.day[g - 1]));
+      expect(lum(SKETCH_ROADS.night[g]), `night ${g + 1}`).toBeGreaterThan(lum(SKETCH_ROADS.night[g - 1]));
+      expect(SKETCH_ROADS.width[g]).toBeGreaterThan(SKETCH_ROADS.width[g - 1]);
+    }
   });
 });

@@ -6,6 +6,7 @@ import { STREET_COLOUR, WINDOW_LIT } from "../src/render/looks";
 import {
   ASPHALT_BLOCK,
   patchAsphalt,
+  KERB_BLOCK,
   patchPalette,
   patchWindows,
   PALETTE_SIZE,
@@ -173,6 +174,31 @@ describe("road asphalt", () => {
       (ASPHALT_BLOCK.x + ASPHALT_BLOCK.w) / PALETTE_SIZE,
       (ASPHALT_BLOCK.y + ASPHALT_BLOCK.h) / PALETTE_SIZE,
     ]);
+  });
+
+  it("with a flat kerb, swaps the kerb block for the instance colour too, under another program key", () => {
+    const flat = new THREE.MeshLambertMaterial();
+    const kerbed = new THREE.MeshLambertMaterial();
+    patchAsphalt(flat, true);
+    patchAsphalt(kerbed);
+    const { fragmentShader, uniforms } = compile(flat);
+    expect(fragmentShader).toContain("uniform vec4 kerbBlock;");
+    expect((uniforms.kerbBlock.value as THREE.Vector4).toArray()).toEqual([
+      KERB_BLOCK.x / PALETTE_SIZE,
+      KERB_BLOCK.y / PALETTE_SIZE,
+      (KERB_BLOCK.x + KERB_BLOCK.w) / PALETTE_SIZE,
+      (KERB_BLOCK.y + KERB_BLOCK.h) / PALETTE_SIZE,
+    ]);
+    expect(compile(kerbed).fragmentShader).not.toContain("kerbBlock");
+    expect(flat.customProgramCacheKey()).not.toBe(kerbed.customProgramCacheKey());
+  });
+
+  it("finds the kerb where the road models sample it: a block of its own, clear of the asphalt", () => {
+    // texels read off road-straight.glb's UVs (2026-11-10): kerb top, side and gutter
+    for (const [x, y] of [[240, 268], [240, 320], [240, 371]]) {
+      expect(x >= KERB_BLOCK.x && x < KERB_BLOCK.x + KERB_BLOCK.w && y >= KERB_BLOCK.y && y < KERB_BLOCK.y + KERB_BLOCK.h, `${x},${y}`).toBe(true);
+    }
+    expect(KERB_BLOCK.x + KERB_BLOCK.w <= ASPHALT_BLOCK.x || KERB_BLOCK.x >= ASPHALT_BLOCK.x + ASPHALT_BLOCK.w).toBe(true);
   });
 
   it("compiles under a program key of its own", () => {

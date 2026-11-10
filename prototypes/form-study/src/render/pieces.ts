@@ -2,7 +2,8 @@
 // tinted. Pure, so it can be tested in node; the Three.js side is in city3d.ts.
 
 import type { Kind } from "../sims/kinds";
-import { roadColour, roadTier, roofColour, WHITE } from "./looks";
+import { gradeOfPasses, type Grade } from "../sims/grades";
+import { roadColour, roofColour, STREET_COLOUR, WHITE } from "./looks";
 
 /** A quarter-turn count: each +90° about the vertical axis turns S→E→N→W. */
 export type Turns = 0 | 1 | 2 | 3;
@@ -201,6 +202,23 @@ export const ROLLER = {
  */
 export const LIGHT = "roads/light-square";
 
+/**
+ * What each grade adds to the plain road (Kenney City Kit Roads): an avenue draws crosswalks at its junctions with a
+ * traffic light, and double lights; a highway lays barriers over every piece but a lone square, and curved double
+ * lights, with a highway sign every 12 cells. Furniture whose poles sample the asphalt block is tinted the asphalt's
+ * own colour, so the road shader's swap leaves it as modelled.
+ */
+export const FURNITURE = {
+  avenueCross: { "roads/road-crossroad": "roads/road-crossroad-line", "roads/road-intersection": "roads/road-intersection-line" } as Record<string, string>,
+  avenueLight: "roads/light-square-double",
+  trafficLight: "roads/traffic-light",
+  highwayLight: "roads/light-curved-double",
+  highwaySign: "roads/sign-highway",
+  barrier: (piece: string): string | null => (piece === "roads/road-square" ? null : `${piece}-barrier`),
+} as const;
+/** A highway sign stands on straight cells where x + y is a multiple of this. */
+export const SIGN_EVERY = 12;
+
 /** How far from the cell's centre the pole stands, in cells: on the edge, just inside it. */
 export const LIGHT_INSET = 0.42;
 
@@ -328,6 +346,12 @@ export const MODEL_NAMES: readonly string[] = [
   GARDEN_TREE,
   ROLLER.model,
   ...CAR_POOL,
+  ...Object.values(FURNITURE.avenueCross),
+  FURNITURE.avenueLight,
+  FURNITURE.trafficLight,
+  FURNITURE.highwayLight,
+  FURNITURE.highwaySign,
+  ...ROAD_BASE.map(([name]) => FURNITURE.barrier(name)).filter((m): m is string => m !== null),
 ];
 
 /** One model on one cell (or, for a streetlight, a point inside it). */
@@ -339,6 +363,8 @@ export interface Placement {
   scale: number;
   /** Instance colour, 0xRRGGBB: the asphalt of a road, the roof of a suburban house, white for no change on anything else. */
   colour: number;
+  /** A road piece whose kerb is drawn in its own asphalt colour, so it shows none (grades below the avenue). */
+  flat?: boolean;
 }
 
 /** What each cell's road and house have been through, which decides how they look. */
@@ -349,6 +375,8 @@ export interface Looks {
   built: (x: number, y: number) => number;
   /** The kind of building on the lot on this cell; undefined (no kind known) is drawn as a house. */
   kind: (x: number, y: number) => Kind | undefined;
+  /** The road's grade on this cell (CitySim.gradeAt); left out, or 0, it is the grade of the cell's own passes. */
+  grade?: (x: number, y: number) => Grade | 0;
 }
 
 /**
@@ -371,12 +399,25 @@ export function layoutCells(
       if (has(x, y)) {
         const mask = (has(x, y - 1) ? 1 : 0) | (has(x + 1, y) ? 2 : 0) | (has(x, y + 1) ? 4 : 0) | (has(x - 1, y) ? 8 : 0);
         const p = roadPiece(mask);
-        const tier = roadTier(looks.driven(x, y));
-        out.push({ model: p.model, x, y, turns: p.turns, scale: 1, colour: roadColour(tier) });
+        const grade = looks.grade?.(x, y) || gradeOfPasses(looks.driven(x, y));
+        const base = grade === 4 ? (FURNITURE.avenueCross[p.model] ?? p.model) : p.model;
+        out.push({ model: base, x, y, turns: p.turns, scale: 1, colour: roadColour(grade), flat: grade <= 3 });
+        const [dx, dy] = LIGHT_SIDE[p.turns];
+        const side = (model: string, colour: number, scale = LIGHT_SCALE): Placement =>
+          ({ model, x: x + dx * LIGHT_INSET, y: y + dy * LIGHT_INSET, turns: p.turns, scale, colour });
+        const junction = p.model === "roads/road-intersection" || p.model === "roads/road-crossroad";
         // every other cell along a straight (x + y is even on alternate cells of a line along either axis)
-        if (tier === 3 && p.model === STRAIGHT && ((x + y) & 1) === 0) {
-          const [dx, dy] = LIGHT_SIDE[p.turns];
-          out.push({ model: LIGHT, x: x + dx * LIGHT_INSET, y: y + dy * LIGHT_INSET, turns: p.turns, scale: LIGHT_SCALE, colour: WHITE });
+        const lightHere = p.model === STRAIGHT && ((x + y) & 1) === 0;
+        if (grade === 3 && lightHere) out.push(side(LIGHT, WHITE));
+        if (grade === 4) {
+          if (lightHere) out.push(side(FURNITURE.avenueLight, WHITE));
+          if (junction) out.push({ model: FURNITURE.trafficLight, x: x + LIGHT_INSET, y: y + LIGHT_INSET, turns: p.turns, scale: LIGHT_SCALE, colour: STREET_COLOUR });
+        }
+        if (grade === 5) {
+          const barrier = FURNITURE.barrier(p.model);
+          if (barrier) out.push({ model: barrier, x, y, turns: p.turns, scale: 1, colour: WHITE });
+          if (lightHere) out.push(side(FURNITURE.highwayLight, WHITE));
+          if (p.model === STRAIGHT && (((x + y) % SIGN_EVERY) + SIGN_EVERY) % SIGN_EVERY === 0) out.push(side(FURNITURE.highwaySign, STREET_COLOUR, 1));
         }
         continue;
       }
@@ -407,6 +448,7 @@ export function layoutKey(placed: readonly Placement[]): number {
     mix(p.turns);
     mix(Math.round(p.scale * 1000));
     mix(p.colour);
+    mix(p.flat ? 1 : 0);
   }
   return h >>> 0;
 }

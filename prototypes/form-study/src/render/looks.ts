@@ -27,7 +27,8 @@ export const ROOF_COLOURS = [0xe9b44c, 0xe0703a, 0x8e6bbe, 0x3e6fb0] as const;
 export const STREET_COLOUR = 0x666b80;
 export const LANE_COLOUR = 0xd2bb86;
 
-export const roadColour = (tier: 1 | 2 | 3): number => (tier === 1 ? LANE_COLOUR : STREET_COLOUR);
+/** A road's asphalt by grade (1 dirt to 5 highway): dirt is sand, every paved grade the model's asphalt. */
+export const roadColour = (grade: 1 | 2 | 3 | 4 | 5): number => (grade === 1 ? LANE_COLOUR : STREET_COLOUR);
 
 /** A suburban roof takes the colour of the hour its house was built; commercial buildings keep their own, so they are placed white. */
 export const roofColour = (built: number): number => ROOF_COLOURS[roofBand(built)];

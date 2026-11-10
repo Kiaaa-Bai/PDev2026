@@ -20,6 +20,7 @@ import {
   lampHead,
   LAMP_HEAD,
   LANDMARK,
+  LIGHT,
   layoutCells,
   layoutKey,
   LIGHT_SCALE,
@@ -272,7 +273,8 @@ describe("layoutCells looks", () => {
         kind: (x, y) => sim.lotKind(x, y),
       },
     );
-  const roads = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model.startsWith("roads/road"));
+  // road pieces only: a highway's barriers are laid over them as models of their own
+  const roads = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model.startsWith("roads/road") && !p.model.endsWith("-barrier"));
   const lights = (placed: ReturnType<typeof layout>) => placed.filter((p) => p.model === "roads/light-square");
 
   it("gives a road driven once the lane's asphalt, and from twice the street's", () => {
@@ -353,8 +355,8 @@ describe("layoutCells looks", () => {
       expect(new Set([key(1), key(2), key(3)]).size).toBe(3);
     });
 
-    it("stays when a road is driven again beyond the top tier", () => {
-      expect(key(3)).toBe(key(40));
+    it("stays when a road is driven again beyond the top grade (a highway from 6 passes)", () => {
+      expect(key(6)).toBe(key(40));
     });
 
     it("notices a roof band on a tier 3 house, which keeps its hour colour", () => {
@@ -888,5 +890,90 @@ describe("zoom", () => {
 
   it("holds a moved view for 10 s before easing it back", () => {
     expect(VIEW_HOLD_MS).toBe(10_000);
+  });
+});
+
+describe("road furniture by grade", () => {
+  /** Lay out road cells `cells` (all of one grade) around (0, 0). */
+  function lay(cells: [number, number][], grade: 1 | 2 | 3 | 4 | 5): Placement[] {
+    const set = new Set(cells.map(([x, y]) => `${x},${y}`));
+    return layoutCells((x, y) => set.has(`${x},${y}`), () => 0, 0, 0, 12, {
+      driven: () => 1,
+      built: () => 0,
+      kind: () => undefined,
+      grade: () => grade,
+    });
+  }
+  const straight: [number, number][] = Array.from({ length: 25 }, (_, i) => [i - 12, 0]);
+  // a crossroad at (0, 0) and a T at (6, 0): a row, a full column through 0 and a half column down from 6
+  const junctions: [number, number][] = [
+    ...Array.from({ length: 14 }, (_, i): [number, number] => [i - 6, 0]), // x = -6 … 7, so (6, 0) has west, east and south
+    [0, -2], [0, -1], [0, 1], [0, 2], [6, 1], [6, 2],
+  ];
+  const models = (placed: Placement[], model: string) => placed.filter((p) => p.model === model);
+  const roads = (placed: Placement[]) => placed.filter((p) => p.model.startsWith("roads/road-") && !p.model.endsWith("-barrier"));
+
+  it("gives dirt and streets no furniture, draws dirt in sand, and keeps their kerbs flat", () => {
+    for (const g of [1, 2] as const) {
+      const placed = lay(straight, g);
+      expect(placed.every((p) => p.model.startsWith("roads/road-")), `grade ${g}`).toBe(true);
+      for (const p of roads(placed)) expect(p).toMatchObject({ flat: true, colour: g === 1 ? LANE_COLOUR : STREET_COLOUR });
+    }
+  });
+
+  it("lights a lit street on every other straight cell, kerbs still flat", () => {
+    const placed = lay(straight, 3);
+    const lit = models(placed, LIGHT);
+    expect(lit.length).toBe(11); // the straights are x = -11 … 11 (the two ends are not); x + y even
+    for (const p of roads(placed)) expect(p.flat).toBe(true);
+  });
+
+  it("gives an avenue kerbs, double lights, crosswalks and traffic lights at its junctions", () => {
+    const placed = lay(junctions, 4);
+    expect(models(placed, LIGHT)).toEqual([]);
+    expect(models(placed, "roads/light-square-double").length).toBeGreaterThan(0);
+    for (const p of roads(placed)) expect(p.flat).toBeFalsy();
+    expect(models(placed, "roads/road-crossroad-line").map((p) => [p.x, p.y])).toEqual([[0, 0]]);
+    expect(models(placed, "roads/road-intersection-line").map((p) => [p.x, p.y])).toEqual([[6, 0]]);
+    expect(models(placed, "roads/road-crossroad")).toEqual([]);
+    const lights = models(placed, "roads/traffic-light");
+    expect(lights.length).toBe(2);
+    for (const p of lights) expect(p.colour).toBe(STREET_COLOUR); // its poles are in the asphalt block
+  });
+
+  it("puts barriers along a highway, curved double lights, a sign every 12 cells, and no crosswalks", () => {
+    const placed = lay(straight, 5);
+    const barriers = models(placed, "roads/road-straight-barrier");
+    expect(barriers.length).toBe(23); // one over every straight piece, turned like it
+    expect(models(placed, "roads/road-end-barrier").length).toBe(2);
+    for (const b of barriers) expect(roads(placed).find((r) => r.x === b.x && r.y === b.y)?.turns).toBe(b.turns);
+    expect(models(placed, "roads/light-curved-double").length).toBe(11);
+    const signs = models(placed, "roads/sign-highway");
+    expect(signs.map((p) => Math.round(p.x))).toEqual([0]); // straights where x + y is a multiple of 12
+    const atJunctions = lay(junctions, 5);
+    expect(models(atJunctions, "roads/road-crossroad-barrier").length).toBe(1);
+    expect(models(atJunctions, "roads/road-intersection-barrier").length).toBe(1);
+    expect(models(atJunctions, "roads/road-crossroad-line")).toEqual([]);
+    expect(models(atJunctions, "roads/traffic-light")).toEqual([]);
+  });
+
+  it("falls back to the grade of the passes when no grade is given", () => {
+    const set = new Set(straight.map(([x, y]) => `${x},${y}`));
+    const placed = layoutCells((x, y) => set.has(`${x},${y}`), () => 0, 0, 0, 12, { driven: () => 3, built: () => 0, kind: () => undefined });
+    expect(models(placed, LIGHT).length).toBe(11);
+  });
+
+  it("knows every furniture model", () => {
+    for (const m of [
+      "roads/road-crossroad-line", "roads/road-intersection-line", "roads/road-straight-barrier", "roads/road-bend-barrier",
+      "roads/road-end-barrier", "roads/road-intersection-barrier", "roads/road-crossroad-barrier", "roads/light-square-double",
+      "roads/light-curved-double", "roads/traffic-light", "roads/sign-highway",
+    ]) expect(MODEL_NAMES, m).toContain(m);
+  });
+
+  it("hashes a flat kerb into the layout key", () => {
+    const a = lay(straight, 2);
+    const b = a.map((p) => ({ ...p, flat: false }));
+    expect(layoutKey(a)).not.toBe(layoutKey(b));
   });
 });
