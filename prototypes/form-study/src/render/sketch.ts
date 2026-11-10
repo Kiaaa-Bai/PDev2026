@@ -87,6 +87,7 @@ export const KIND_COLOURS: Record<Kind, number> = {
   shop: 0xd94f4f,
   office: 0x8a93a8,
   landmark: WINDOW_LIT,
+  industrial: 0xb08a4a,
 };
 
 /** Road lines by grade (dirt, street, lit street, avenue, highway): darker and wider by day, lighter by night. */

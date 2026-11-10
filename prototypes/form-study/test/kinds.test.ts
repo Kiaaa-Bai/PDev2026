@@ -15,6 +15,8 @@ import {
   type Demand,
   type Kind,
   type Neighbours,
+  zoneNow,
+  zoneOf,
 } from "../src/sims/kinds";
 
 const at = (kind: Kind) => UNLOCKS.find((u) => u.kind === kind)!.at;
@@ -71,7 +73,7 @@ describe("UNLOCKS", () => {
 describe("capacities", () => {
   it("lists the residents of each home by tier, and the jobs of each workplace", () => {
     expect(RESIDENTS).toEqual({ house: [2, 4, 6], row: [3, 3, 3], detached: [2, 3, 4], apartment: [2, 4, 20] });
-    expect(JOBS).toEqual({ shop: 4, office: 12, landmark: 30 });
+    expect(JOBS).toEqual({ shop: 4, office: 12, landmark: 30, industrial: 15 });
   });
 });
 
@@ -338,5 +340,79 @@ describe("neighboursAt", () => {
       const [x, y] = k.split(",").map(Number);
       expect(Math.abs(x - 4) + Math.abs(y + 2), k).toBe(1);
     }
+  });
+});
+
+describe("kindFor with the lot's surroundings (zones)", () => {
+  const beside = { roadSides: 1, cornerRoads: false, lotsAlongRoad: 1 };
+  const WORK = 0.05; // under the workplace chance in a city in balance
+  const HOME = 0.9;
+  const BAL: Demand = { residents: 100, jobs: 100 };
+
+  it("is exactly today's rule with no surroundings given", () => {
+    for (const roll of [0, 0.05, 0.3, 0.6, 0.95]) expect(kindForWith(beside, 0, roll, BAL, false, {})).toBe(kindForWith(beside, 0, roll, BAL, false));
+  });
+
+  it("makes a workplace a shop while commercial jobs are short of one per eight residents", () => {
+    expect(kindForWith(beside, 0, WORK, BAL, false, { commercialShort: true })).toBe("shop");
+    expect(kindForWith(beside, 0, WORK, BAL, false, {})).toBe("office");
+  });
+
+  it("makes a workplace in the city's outer ring industry, unless a home is within 2 cells", () => {
+    expect(kindForWith(beside, 0, WORK, BAL, false, { outer: true })).toBe("industrial");
+    expect(kindForWith(beside, 0, WORK, BAL, false, { outer: true, nearHome: true })).toBe("office");
+    expect(kindForWith(beside, 0, WORK, BAL, false, { touchesIndustry: true })).toBe("industrial");
+  });
+
+  it("never puts a home within 2 cells of industry", () => {
+    for (const roll of [0.3, 0.5, 0.9, 0.99]) {
+      const k = kindForWith(beside, 3_000_000, roll, BAL, false, { nearIndustry: true });
+      expect(isHome(k), `${roll} → ${k}`).toBe(false);
+    }
+  });
+
+  it("follows its neighbour along the street most of the time", () => {
+    expect(kindForWith(beside, 0, 0.3, BAL, false, { clusterKind: "office" })).toBe("office");
+    expect(kindForWith(beside, 0, 0.59, BAL, false, { clusterKind: "industrial" })).toBe("industrial");
+    // a neighbour's industry is not copied next to a home
+    expect(kindForWith(beside, 0, 0.3, BAL, false, { clusterKind: "industrial", nearHome: true })).not.toBe("industrial");
+    // a home neighbour makes it a home
+    expect(isHome(kindForWith(beside, 0, 0.01, BAL, false, { clusterKind: "house" }))).toBe(true);
+    // above the cluster chance the lot decides for itself again
+    expect(kindForWith(beside, 0, 0.6 + 0.4 * 0.05, BAL, false, { clusterKind: "house" })).toBe("office");
+  });
+
+  it("is only a shop or an office on highway frontage", () => {
+    for (const roll of [0, 0.3, 0.7, 0.99]) expect(["shop", "office"]).toContain(kindForWith(beside, 0, roll, BAL, false, { highwayFrontage: true }));
+  });
+
+  it("counts industry as a workplace with jobs", () => {
+    expect(isKind("industrial")).toBe(true);
+    expect(JOBS.industrial).toBeGreaterThan(0);
+  });
+
+  const isHome = (k: Kind) => k in RESIDENTS;
+  void HOME;
+});
+
+describe("zoneOf and zoneNow", () => {
+  it("files every kind under its zone", () => {
+    for (const k of ["house", "row", "detached", "apartment"] as const) expect(zoneOf(k)).toBe("residential");
+    expect(zoneOf("shop")).toBe("commercial");
+    expect(zoneOf("office")).toBe("office");
+    expect(zoneOf("industrial")).toBe("industrial");
+    expect(zoneOf("park")).toBe("park");
+    expect(zoneOf("landmark")).toBe("landmark");
+  });
+
+  it("rezones homes on an avenue partly to shops, and on a highway wholly to shops and offices", () => {
+    expect(zoneNow("residential", 0.2, 4)).toBe("commercial");
+    expect(zoneNow("residential", 0.3, 4)).toBe("residential"); // a quarter of the homes on an avenue
+    expect(zoneNow("residential", 0.5, 4)).toBe("residential");
+    expect(zoneNow("residential", 0.3, 5)).toBe("commercial");
+    expect(zoneNow("residential", 0.7, 5)).toBe("office");
+    expect(zoneNow("residential", 0.1, 3)).toBe("residential");
+    expect(zoneNow("industrial", 0.1, 5)).toBe("industrial");
+    expect(zoneNow("park", 0.1, 5)).toBe("park");
   });
 });

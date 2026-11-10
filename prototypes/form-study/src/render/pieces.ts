@@ -182,6 +182,8 @@ export function buildingPlacements(kind: Kind, tier: 1 | 2 | 3, x: number, y: nu
       ];
     case "house":
       return [house(HOUSE_SCALE[tier - 1])];
+    case "industrial":
+      return [commercialOne(pick(OFFICE_LOW_POOL, x, y))]; // until the industrial kit's models are in (plan Task 4)
   }
 }
 

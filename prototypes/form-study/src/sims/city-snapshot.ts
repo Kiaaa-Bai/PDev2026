@@ -10,6 +10,8 @@ export interface CitySnapshot {
   /** CITY_RULES_VERSION when it was taken. */
   rules: number;
   road: [string, number][];
+  /** Each lot's own roll in [0, 1), drawn when it was made. */
+  rolls: [string, number][];
   /** Each road cell's grade (1 dirt to 5 highway), the highest it has reached. */
   grades: [string, 1 | 2 | 3 | 4 | 5][];
   lots: [string, number][];
@@ -46,6 +48,13 @@ function isKindEntries(v: unknown, lots: [string, number][]): v is [string, Kind
   return keys.size === lots.length && lots.every(([k]) => keys.has(k));
 }
 
+/** A roll in [0, 1) for exactly the lots there are. */
+function isRollEntries(v: unknown, lots: [string, number][]): v is [string, number][] {
+  if (!Array.isArray(v) || v.length !== lots.length) return false;
+  const keys = new Set(lots.map(([k]) => k));
+  return v.every((e) => Array.isArray(e) && e.length === 2 && keys.has(e[0]) && isNumber(e[1]) && e[1] >= 0 && e[1] < 1);
+}
+
 /** Grades for road cells only, each 1 to 5. */
 function isGradeEntries(v: unknown, road: [string, number][]): v is [string, 1 | 2 | 3 | 4 | 5][] {
   if (!Array.isArray(v)) return false;
@@ -63,6 +72,7 @@ export function isSnapshot(s: unknown): s is CitySnapshot {
     isGradeEntries(v.grades, v.road) &&
     isCellEntries(v.lots) &&
     isKindEntries(v.kinds, v.lots) &&
+    isRollEntries(v.rolls, v.lots) &&
     typeof v.landmark === "boolean" &&
     typeof r === "object" &&
     r !== null &&

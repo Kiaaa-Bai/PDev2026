@@ -5,9 +5,9 @@
  * House, row house, detached house and the workplaces (shop, office) are there from the start; park, apartment and
  * the landmark unlock with distance.
  */
-export type Kind = "house" | "row" | "detached" | "park" | "shop" | "office" | "apartment" | "landmark";
+export type Kind = "house" | "row" | "detached" | "park" | "shop" | "office" | "apartment" | "landmark" | "industrial";
 
-const KINDS: readonly Kind[] = ["house", "row", "detached", "park", "shop", "office", "apartment", "landmark"];
+const KINDS: readonly Kind[] = ["house", "row", "detached", "park", "shop", "office", "apartment", "landmark", "industrial"];
 
 export const isKind = (v: unknown): v is Kind => typeof v === "string" && (KINDS as readonly string[]).includes(v);
 
@@ -42,7 +42,7 @@ export const RESIDENTS: Record<"house" | "row" | "detached" | "apartment", reado
 };
 
 /** How many jobs a workplace holds, whatever its age. */
-export const JOBS: Record<"shop" | "office" | "landmark", number> = { shop: 4, office: 12, landmark: 30 };
+export const JOBS: Record<"shop" | "office" | "landmark" | "industrial", number> = { shop: 4, office: 12, landmark: 30, industrial: 15 };
 
 /** The whole city's residents and jobs, each counted at tier-3 capacity so the sum does not drift as houses grow. */
 export interface Demand {
@@ -61,6 +61,34 @@ export const JOBS_SHORT_RATIO = 1.2;
 export function workplaceChance(demand: Demand): number {
   return demand.residents > JOBS_SHORT_RATIO * demand.jobs ? WORKPLACE_CHANCE_SHORT : WORKPLACE_CHANCE;
 }
+
+/**
+ * What a new lot's surroundings say about its zone, all worked out by the city when the lot is made. Left out, each is
+ * false (or none), and `kindFor` is today's rule.
+ */
+export interface LotContext {
+  /** The city's commercial jobs are short of one per `RESIDENTS_PER_SHOP_JOB` residents. */
+  commercialShort?: boolean;
+  /** The lot is in the city's outer ring: further from the centroid of homes than their spread. */
+  outer?: boolean;
+  /** A home stands within `BUFFER` cells (no industry may come here). */
+  nearHome?: boolean;
+  /** Industry stands within `BUFFER` cells (no home may come here). */
+  nearIndustry?: boolean;
+  /** Industry stands on a neighbouring cell, so industry may cluster here even inside the ring. */
+  touchesIndustry?: boolean;
+  /** The kind of the nearest lot along the same street within `BUFFER` cells, for clustering. */
+  clusterKind?: Kind | null;
+  /** The lot fronts a highway (grade 5): only a shop or an office. */
+  highwayFrontage?: boolean;
+}
+
+/** Commercial jobs are short while there are fewer than one for this many residents (Cities: Skylines' zero point). */
+export const RESIDENTS_PER_SHOP_JOB = 8;
+/** How far, in cells (a square), industry and homes keep from each other. No city builder documents one; ours. */
+export const BUFFER = 2;
+/** The chance a new lot takes the zone of its neighbour along the street, so zones come in blocks. */
+export const CLUSTER_CHANCE = 0.6;
 
 /** What surrounds a lot at the moment it is made. */
 export interface Neighbours {
@@ -110,13 +138,77 @@ export function neighboursAt(isRoad: Has, isLot: Has, x: number, y: number): Nei
  *
  * The landmark is not decided here: the city gives it to one lot, beside its busiest road.
  */
-export function kindFor(n: Neighbours, distance: number, roll: number, demand: Demand, besideAvenue: boolean): Kind {
-  const p = workplaceChance(demand);
-  if (roll < p) return n.cornerRoads || besideAvenue ? "shop" : "office";
+export function kindFor(n: Neighbours, distance: number, roll: number, demand: Demand, besideAvenue: boolean, ctx: LotContext = {}): Kind {
+  if (ctx.highwayFrontage) return roll < 0.5 ? "shop" : "office";
+  let r = roll;
+  // a neighbour along the street, below the cluster chance, makes the decision for this lot (the roll is then
+  // stretched back over [0, 1) whichever way it went, so what follows still reads a uniform roll)
+  let home = false;
+  // while shops are short, a home next door does not make this lot a home too
+  const cluster = ctx.commercialShort && ctx.clusterKind && !isWorkplaceKind(ctx.clusterKind) ? null : ctx.clusterKind;
+  if (cluster) {
+    if (roll < CLUSTER_CHANCE) {
+      const k = cluster;
+      if (isWorkplaceKind(k) && (k !== "industrial" || !ctx.nearHome)) return k;
+      home = !isWorkplaceKind(k);
+      r = roll / CLUSTER_CHANCE;
+    } else r = (roll - CLUSTER_CHANCE) / (1 - CLUSTER_CHANCE);
+  }
+  // shops are a demand of their own: while they are short, a lot is a workplace as often as when jobs are short
+  const p = ctx.commercialShort ? Math.max(workplaceChance(demand), WORKPLACE_CHANCE_SHORT) : workplaceChance(demand);
+  if (!home) {
+    if (r < p) return workplaceKind(n, besideAvenue, ctx);
+    r = (r - p) / (1 - p);
+  }
+  // a home, unless industry is near: then a park (once parks unlock) or an office
+  if (ctx.nearIndustry) return isUnlocked("park", distance) && r < 0.5 ? "park" : "office";
   const plain: Kind = isUnlocked("apartment", distance) ? "apartment" : "house";
   if (n.cornerRoads) return plain;
   if (n.lotsAlongRoad >= 2) return "row";
   if (n.lotsAlongRoad <= 0) return "detached";
-  if (isUnlocked("park", distance) && (roll - p) / (1 - p) < PARK_CHANCE) return "park";
+  if (isUnlocked("park", distance) && r < PARK_CHANCE) return "park";
   return plain;
+}
+
+const isWorkplaceKind = (k: Kind): boolean => k === "shop" || k === "office" || k === "industrial";
+
+/** Which workplace: a shop where shops are short, at a corner or beside an avenue; industry in the outer ring (or next to industry) away from homes; otherwise an office. */
+function workplaceKind(n: Neighbours, besideAvenue: boolean, ctx: LotContext): Kind {
+  if (ctx.commercialShort || n.cornerRoads || besideAvenue) return "shop";
+  if ((ctx.outer || ctx.touchesIndustry) && !ctx.nearHome) return "industrial";
+  return "office";
+}
+
+/** A lot's zone, Cities: Skylines-style. */
+export type Zone = "residential" | "commercial" | "office" | "industrial" | "park" | "landmark";
+
+/** The zone each kind of lot belongs to. */
+export function zoneOf(kind: Kind): Zone {
+  switch (kind) {
+    case "house":
+    case "row":
+    case "detached":
+    case "apartment":
+      return "residential";
+    case "shop":
+      return "commercial";
+    default:
+      return kind;
+  }
+}
+
+/** On an avenue, this share of homes (by their roll) become shops; on a highway, this share shops and the rest offices. */
+export const AVENUE_SHOP_SHARE = 0.25;
+export const HIGHWAY_SHOP_SHARE = 0.5;
+
+/**
+ * The zone a lot holds now, from the zone it was born with, its own roll and the best grade of the roads it touches:
+ * homes beside an avenue (grade 4) become shops below `AVENUE_SHOP_SHARE`; homes beside a highway (grade 5) all become
+ * shops or offices. Every other zone stays.
+ */
+export function zoneNow(born: Zone, roll: number, grade: number): Zone {
+  if (born !== "residential") return born;
+  if (grade >= 5) return roll < HIGHWAY_SHOP_SHARE ? "commercial" : "office";
+  if (grade === 4 && roll < AVENUE_SHOP_SHARE) return "commercial";
+  return born;
 }

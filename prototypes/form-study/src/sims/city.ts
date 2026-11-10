@@ -2,7 +2,7 @@ import { CITY_RULES_VERSION } from "../config";
 import type { Point } from "../data";
 import { Rng } from "../rng";
 import { isSnapshot, type CitySnapshot } from "./city-snapshot";
-import { isUnlocked, JOBS, kindFor, neighboursAt, RESIDENTS, type Demand, type Kind } from "./kinds";
+import { BUFFER, isUnlocked, JOBS, kindFor, neighboursAt, RESIDENTS, RESIDENTS_PER_SHOP_JOB, zoneNow, zoneOf, type Demand, type Kind, type LotContext, type Zone } from "./kinds";
 import { gradeOfPasses, runGrade, runThrough, type Grade } from "./grades";
 import { headingFor } from "./steer";
 import type { Sim } from "./types";
@@ -39,6 +39,12 @@ export interface CityConfig {
    * evens itself out.
    */
   shapeCoast?: { aspect: number; strength: number; min: number; max: number };
+  /**
+   * When set, a new lot's kind also reads its surroundings (`LotContext`: the commercial target, industry in the outer
+   * ring and kept `BUFFER` cells from homes, clustering along the street, highway frontage), and a lot's zone follows
+   * its road's grade (`zoneNow`). Left out, lots are chosen and zoned as before.
+   */
+  zoning?: boolean;
   /** A lot beside new road gets its house after a delay in this range. */
   lotDelayMs: [number, number];
   /** Chance that a free cell beside new road becomes a lot. */
@@ -104,6 +110,12 @@ export class CitySim implements Sim {
    * over the road cells. Every term is a whole or half number, so the sums are exact whatever order they are added in.
    */
   private spread = { n: 0, u: 0, uu: 0, v: 0, vv: 0 };
+  /** Each lot's own roll, drawn when it was made, which later decisions about it (rezoning) read instead of drawing. */
+  private rolls = new Map<string, number>();
+  /** Jobs in shops, counted at full capacity like `need`. */
+  private shopJobs = 0;
+  /** Count and sums over the homes' cells (x, y, x² + y²): the centroid of homes and their spread, exactly. */
+  private homes = { n: 0, x: 0, y: 0, sq: 0 };
   /** Each road cell's grade: the highest its straight runs have ever reached, so it never falls (see `regrade`). */
   private grades = new Map<string, Grade>();
   private clock: number | null = null;
@@ -179,6 +191,7 @@ export class CitySim implements Sim {
     return {
       rules: CITY_RULES_VERSION,
       road: [...this.road],
+      rolls: [...this.rolls],
       grades: [...this.grades],
       lots: [...this.lots],
       kinds: [...this.kinds],
@@ -205,10 +218,12 @@ export class CitySim implements Sim {
       sim.addSpread(x, y);
     }
     for (const [k, g] of s.grades) sim.grades.set(k, g);
+    for (const [k, r] of s.rolls) sim.rolls.set(k, r);
     for (const [k, t] of s.lots) sim.lots.set(k, t);
     for (const [k, kind] of s.kinds) {
       sim.kinds.set(k, kind);
-      sim.count(kind, 1);
+      const [x, y] = k.split(",").map(Number);
+      sim.count(kind, 1, x, y);
     }
     sim.landmarkPlaced = s.landmark;
     sim.roller.x = s.roller.x;
@@ -481,9 +496,10 @@ export class CitySim implements Sim {
     const flattened = this.kinds.get(k);
     if (flattened !== undefined) {
       if (flattened === "landmark") this.landmarkPlaced = false;
-      this.count(flattened, -1);
+      this.count(flattened, -1, x, y);
     }
     this.kinds.delete(k);
+    this.rolls.delete(k);
     const [lo, hi] = this.cfg.lotDelayMs;
     for (let d = 0; d < 4; d++) {
       const lx = x + DX[d];
@@ -496,7 +512,8 @@ export class CitySim implements Sim {
       const roll = this.rng.next();
       const kind = this.kindOfNewLot(lx, ly, roll);
       this.kinds.set(nk, kind);
-      this.count(kind, 1);
+      this.rolls.set(nk, roll);
+      this.count(kind, 1, lx, ly);
       this.lots.set(nk, ready);
     }
     this.version++;
@@ -520,11 +537,82 @@ export class CitySim implements Sim {
       x,
       y,
     );
-    return kindFor(n, this.distance, roll, this.need, this.besideWideRoad(x, y));
+    return kindFor(n, this.distance, roll, this.need, this.besideWideRoad(x, y), this.cfg.zoning ? this.lotContext(x, y) : {});
   }
 
-  /** Adds (`sign` 1) or takes away (-1) a lot of `kind` from the residents and jobs. */
-  private count(kind: Kind, sign: 1 | -1): void {
+  /**
+   * What the city says about a lot about to be made at (x, y), for `kindFor` (see `LotContext`). The outer ring is the
+   * cells further from the centroid of homes than the homes' spread (the root mean square of their distances), once there
+   * are five homes; a cluster neighbour is the nearest lot along the lot's street (the line across its front), within
+   * `BUFFER` cells, the west or north one first.
+   */
+  private lotContext(x: number, y: number): LotContext {
+    const kindAt = (cx: number, cy: number) => this.kinds.get(cellKey(cx, cy));
+    const isHome = (k: Kind | undefined) => k !== undefined && k in RESIDENTS;
+    let nearHome = false;
+    let nearIndustry = false;
+    for (let dy = -BUFFER; dy <= BUFFER; dy++) {
+      for (let dx = -BUFFER; dx <= BUFFER; dx++) {
+        const k = kindAt(x + dx, y + dy);
+        if (isHome(k)) nearHome = true;
+        if (k === "industrial") nearIndustry = true;
+      }
+    }
+    let touchesIndustry = false;
+    let highwayFrontage = false;
+    for (let d = 0; d < 4; d++) {
+      if (kindAt(x + DX[d], y + DY[d]) === "industrial") touchesIndustry = true;
+      if (this.gradeAt(x + DX[d], y + DY[d]) === 5) highwayFrontage = true;
+    }
+    const h = this.homes;
+    let outer = false;
+    if (h.n >= 5) {
+      const cx = h.x / h.n;
+      const cy = h.y / h.n;
+      const spread = h.sq / h.n - cx * cx - cy * cy;
+      outer = (x - cx) ** 2 + (y - cy) ** 2 > spread;
+    }
+    // along the street: the street is the first road among S, E, N, W (the side the lot faces), "along" at right angles
+    const road = (cx: number, cy: number) => this.road.has(cellKey(cx, cy));
+    const eastWest = road(x, y + 1) || (!road(x + 1, y) && road(x, y - 1));
+    const [ax, ay] = eastWest ? [1, 0] : [0, 1];
+    let clusterKind: Kind | null = null;
+    for (let i = 1; i <= BUFFER && !clusterKind; i++) clusterKind = kindAt(x - ax * i, y - ay * i) ?? kindAt(x + ax * i, y + ay * i) ?? null;
+    return {
+      commercialShort: this.shopJobs < this.need.residents / RESIDENTS_PER_SHOP_JOB,
+      outer,
+      nearHome,
+      nearIndustry,
+      touchesIndustry,
+      clusterKind,
+      highwayFrontage,
+    };
+  }
+
+  /**
+   * The zone the lot at (x, y) holds now (undefined where there is no lot): its kind's zone, and with `zoning`, rezoned
+   * by its own roll and the best grade of the roads it touches (`zoneNow`).
+   */
+  lotZone(x: number, y: number): Zone | undefined {
+    const k = cellKey(x, y);
+    const kind = this.kinds.get(k);
+    if (kind === undefined) return undefined;
+    const born = zoneOf(kind);
+    if (!this.cfg.zoning) return born;
+    let best = 0;
+    for (let d = 0; d < 4; d++) best = Math.max(best, this.gradeAt(x + DX[d], y + DY[d]));
+    return zoneNow(born, this.rolls.get(k) ?? 0, best);
+  }
+
+  /** Adds (`sign` 1) or takes away (-1) a lot of `kind` at (x, y) from the residents and jobs, the shops and the homes. */
+  private count(kind: Kind, sign: 1 | -1, x: number, y: number): void {
+    if (kind === "shop") this.shopJobs += sign * JOBS.shop;
+    if (kind in RESIDENTS) {
+      this.homes.n += sign;
+      this.homes.x += sign * x;
+      this.homes.y += sign * y;
+      this.homes.sq += sign * (x * x + y * y);
+    }
     if (kind in RESIDENTS) this.need.residents += sign * RESIDENTS[kind as keyof typeof RESIDENTS][2];
     if (kind in JOBS) this.need.jobs += sign * JOBS[kind as keyof typeof JOBS];
   }

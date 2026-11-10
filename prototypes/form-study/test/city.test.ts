@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CITY_RULES_VERSION } from "../src/config";
 import { CitySim, cellKey, roadMaskAt, type CityConfig } from "../src/sims/city";
 import { JOBS, kindFor, neighboursAt, RESIDENTS, UNLOCKS, type Kind } from "../src/sims/kinds";
+import { jobsOf, residentsOf } from "../src/sims/people";
 
 const cfg: CityConfig = {
   speed: 1,
@@ -53,6 +54,7 @@ function cityOf(c: CityConfig, kinds: Kind[]): CitySim {
     const k = cellKey(1000 + i, 1000);
     snap.lots.push([k, 0]);
     snap.kinds.push([k, kind]);
+    snap.rolls.push([k, 0.5]);
   });
   return CitySim.restore(c, snap)!;
 }
@@ -321,8 +323,8 @@ describe("CitySim kinds", () => {
   }
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
-  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) and road grades kept in the snapshot (8) change what a city grows", () => {
-    expect(CITY_RULES_VERSION).toBe(8);
+  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) road grades kept in the snapshot (8) and zones (9) change what a city grows", () => {
+    expect(CITY_RULES_VERSION).toBe(9);
   });
 
   it("gives every lot a kind, stored apart from the time its house appears", () => {
@@ -829,7 +831,7 @@ describe("CitySim snapshot", () => {
     expect(CitySim.restore(busy, { ...snap, kinds: "house" })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, kinds: [["0,1", "tower"]] })).toBeNull();
     // an office is a real kind
-    const withOffice = { ...snap, lots: [["5,5", 0]], kinds: [["5,5", "office"]] };
+    const withOffice = { ...snap, lots: [["5,5", 0]], kinds: [["5,5", "office"]], rolls: [["5,5", 0.5]] };
     expect(CitySim.restore(busy, withOffice)?.lotKind(5, 5)).toBe("office");
     expect(CitySim.restore(busy, { ...snap, kinds: [["0,1", 3]] })).toBeNull();
     expect(CitySim.restore(busy, { ...snap, kinds: snap.kinds.slice(1) })).toBeNull();
@@ -1287,5 +1289,104 @@ describe("CitySim grades", () => {
     sim.advanceTo(1000 + 3500); // three more cells, each re-grading the whole run
     expect(performance.now() - t0).toBeLessThan(50);
     expect(sim.road.has(cellKey(2002, 0))).toBe(true);
+  });
+});
+
+describe("CitySim zones", () => {
+  const zoned: CityConfig = { ...cfg, zoning: true, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
+  /** A long winding drive with everything unlocked. */
+  function grown(c: CityConfig, pushes = 400): CitySim {
+    const sim = new CitySim(c);
+    sim.distance = 3_000_000;
+    const headings = [PUSH.E, PUSH.E, PUSH.S, PUSH.W, PUSH.W, PUSH.N, PUSH.E, PUSH.S, PUSH.S, PUSH.W, PUSH.N, PUSH.N];
+    let t = 1000;
+    for (let i = 0; i < pushes; i++) {
+      t += 2500 + (i % 3) * 2000;
+      swipe(sim, t, ...headings[(i * 5) % headings.length]);
+      sim.distance = 3_000_000;
+    }
+    sim.advanceTo(t + 60_000);
+    return sim;
+  }
+  const lotsOf = (sim: CitySim) => [...sim.kinds.entries()].map(([k, kind]) => ({ k, kind, at: k.split(",").map(Number) as [number, number] }));
+  const isHomeKind = (kind: string) => kind === "house" || kind === "row" || kind === "detached" || kind === "apartment";
+
+  it("grows industry, and never within BUFFER (2) cells of a home", () => {
+    const sim = grown(zoned);
+    const lots = lotsOf(sim);
+    const industry = lots.filter((l) => l.kind === "industrial");
+    expect(industry.length).toBeGreaterThan(0);
+    for (const i of industry) {
+      for (const h of lots.filter((l) => isHomeKind(l.kind))) {
+        const far = Math.max(Math.abs(i.at[0] - h.at[0]), Math.abs(i.at[1] - h.at[1]));
+        expect(far, `${i.k} vs home ${h.k}`).toBeGreaterThan(2);
+      }
+    }
+  });
+
+  it("keeps commercial jobs near one per eight residents", () => {
+    const sim = grown(zoned);
+    let shopJobs = 0;
+    let residents = 0;
+    for (const { kind } of lotsOf(sim)) {
+      if (kind === "shop") shopJobs += JOBS.shop;
+      if (kind in RESIDENTS) residents += RESIDENTS[kind as keyof typeof RESIDENTS][2];
+    }
+    expect(residents).toBeGreaterThan(200);
+    expect(shopJobs).toBeGreaterThanOrEqual(residents / 8 * 0.8);
+  });
+
+  it("makes no industry in a city with no homes yet", () => {
+    const sim = new CitySim(zoned);
+    swipe(sim, 1000);
+    sim.advanceTo(8000);
+    expect(lotsOf(sim).some((l) => l.kind === "industrial")).toBe(false);
+  });
+
+  it("is today's city when zoning is off", () => {
+    const { zoning: _z, ...plain } = zoned;
+    const off = grown(plain, 60);
+    expect(lotsOf(off).some((l) => l.kind === "industrial")).toBe(false);
+  });
+
+  it("rezones a home beside an avenue by its own roll, and keeps the roll through a snapshot", () => {
+    const snap = through(new CitySim(zoned).snapshot());
+    snap.road = Array.from({ length: 5 }, (_, i): [string, number] => [cellKey(i, 0), 4]);
+    snap.grades = snap.road.map(([k]) => [k, 4]);
+    snap.lots = [[cellKey(1, 1), 0], [cellKey(3, 1), 0]];
+    snap.kinds = [[cellKey(1, 1), "house"], [cellKey(3, 1), "house"]];
+    snap.rolls = [[cellKey(1, 1), 0.2], [cellKey(3, 1), 0.5]];
+    const sim = CitySim.restore(zoned, snap)!;
+    expect(sim).not.toBeNull();
+    expect(sim.lotZone(1, 1)).toBe("commercial");
+    expect(sim.lotZone(3, 1)).toBe("residential");
+    const again = CitySim.restore(zoned, through(sim.snapshot()))!;
+    expect(again.lotZone(1, 1)).toBe("commercial");
+    // with zoning off, a home stays a home whatever its road
+    expect(CitySim.restore(cfg, snap)!.lotZone(1, 1)).toBe("residential");
+  });
+
+  it("keeps a roll for exactly the lots there are, also after paving over some", () => {
+    const sim = grown(zoned, 200);
+    const s = sim.snapshot();
+    expect(new Set(s.rolls.map(([k]) => k))).toEqual(new Set(s.lots.map(([k]) => k)));
+    for (const [, r] of s.rolls) expect(r >= 0 && r < 1).toBe(true);
+  });
+});
+
+describe("people in rezoned lots", () => {
+  it("houses nobody in a home that became a shop, and gives it a shop's jobs", () => {
+    const zonedCfg: CityConfig = { ...cfg, zoning: true };
+    const snap = through(new CitySim(zonedCfg).snapshot());
+    snap.road = Array.from({ length: 5 }, (_, i): [string, number] => [cellKey(i, 0), 4]);
+    snap.grades = snap.road.map(([k]) => [k, 4]);
+    snap.lots = [[cellKey(1, 1), 0], [cellKey(3, 1), 0]];
+    snap.kinds = [[cellKey(1, 1), "house"], [cellKey(3, 1), "house"]];
+    snap.rolls = [[cellKey(1, 1), 0.2], [cellKey(3, 1), 0.5]];
+    const sim = CitySim.restore(zonedCfg, snap)!;
+    const homes = new Set(residentsOf(sim, 10_000_000).map((r) => r.home.join(",")));
+    expect(homes.has("1,1")).toBe(false);
+    expect(homes.has("3,1")).toBe(true);
+    expect(jobsOf(sim).filter((j) => j.work.join(",") === "1,1")).toHaveLength(JOBS.shop);
   });
 });

@@ -3,7 +3,7 @@ import type { FarmConfig } from "./sims/farm";
 import type { MonsterConfig } from "./sims/monster";
 
 /** Bump when the city's rules change, so an old snapshot is dropped and the days are replayed. */
-export const CITY_RULES_VERSION = 8;
+export const CITY_RULES_VERSION = 9;
 
 export const CITY: CityConfig = {
   // The roller follows the cursor: a tile per 100 points it moves, up to 20 tiles a second (rules 5).
@@ -19,6 +19,8 @@ export const CITY: CityConfig = {
   idleStopMs: 2000,
   slowMs: 2000,
   shapeCoast: { aspect: 1.5, strength: 1.5, min: 0.25, max: 4 },
+  // Skylines-style zones: a shop share, industry at the edge kept 3 cells from homes, clusters, rezoning (rules 9)
+  zoning: true,
   lotDelayMs: [3_000, 15_000],
   lotChance: 0.6,
   tierAgesMs: [5 * 60_000, 20 * 60_000],

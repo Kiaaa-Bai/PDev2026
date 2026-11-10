@@ -15,7 +15,8 @@ export { JOBS, RESIDENTS };
 export type Cell = readonly [number, number];
 
 /** What people.ts reads of a city: its lots, their kinds and how old their houses are. */
-export type CityLots = Pick<CitySim, "lots" | "kinds" | "houseTier">;
+/** What people read of a city: its lots, their kinds and tiers, and (when the city zones) the zone each lot holds now. */
+export type CityLots = Pick<CitySim, "lots" | "kinds" | "houseTier"> & Partial<Pick<CitySim, "lotZone">>;
 
 export interface Resident {
   /** The same for this person as the house grows, and different for everyone in the city (a safe integer). */
@@ -71,6 +72,7 @@ export function residentsOf(sim: CityLots, t: number): Resident[] {
   for (const [key, kind] of sim.kinds) {
     if (!isHome(kind)) continue;
     const [x, y] = cellOf(key);
+    if (sim.lotZone && sim.lotZone(x, y) !== "residential") continue; // a home its avenue turned into a shop or an office
     const tier = sim.houseTier(x, y, t);
     if (tier === 0) continue;
     const n = RESIDENTS[kind][tier - 1];
@@ -88,10 +90,13 @@ export function residentsOf(sim: CityLots, t: number): Resident[] {
 export function jobsOf(sim: CityLots): Job[] {
   const out: Job[] = [];
   for (const [key, kind] of sim.kinds) {
-    if (!isWorkplace(kind)) continue;
     const [x, y] = cellOf(key);
+    // a lot works as the zone it holds now: a rezoned home has a shop's or an office's jobs
+    const zone = sim.lotZone?.(x, y);
+    const as = zone === "commercial" ? "shop" : zone === "office" ? "office" : kind;
+    if (!isWorkplace(as)) continue;
     const base = cellId(x, y) * SLOTS;
-    for (let i = 0; i < JOBS[kind]; i++) out.push({ id: base + i, work: [x, y] });
+    for (let i = 0; i < JOBS[as]; i++) out.push({ id: base + i, work: [x, y] });
   }
   return out;
 }
