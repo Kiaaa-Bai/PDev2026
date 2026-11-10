@@ -65,6 +65,16 @@ export const BLOCK_POOL: readonly string[] = [...APARTMENT_POOL, ...OFFICE_TOWER
 /** A young office is low, like a shop (a to e); at tier 3 it rises into a tower. */
 export const OFFICE_LOW_POOL: readonly string[] = commercial("abcde");
 export const LANDMARK = "commercial/building-skyscraper-a";
+/** The commercial slab: a shop at high density, an office at medium. */
+export const SLAB = "commercial/building-k";
+/** Offices at high density: the towers. */
+export const OFFICE_HIGH_POOL: readonly string[] = commercial("lmn");
+/** A shop at low density is a small one. */
+export const SMALL_SHOP_SCALE = 0.6;
+const industrial = (letters: string) => letters.split("").map((c) => `industrial/building-${c}`);
+/** Industry by density (Kenney City Kit Industrial): sheds, factories, plants; the extras stand on the lot with them. */
+export const INDUSTRY_POOLS: readonly (readonly string[])[] = [industrial("abc"), industrial("def"), industrial("gh")];
+export const INDUSTRY_EXTRAS: readonly (readonly string[])[] = [[], ["industrial/chimney-small"], ["industrial/chimney-large", "industrial/detail-tank"]];
 
 /** A park is a tree and planters; a detached house has a small tree in its garden. */
 export const PARK_TREE = "suburban/tree-large";
@@ -168,9 +178,10 @@ export function buildingPlacements(kind: Kind, tier: 1 | 2 | 3, x: number, y: nu
     case "detached":
       return [house(DETACHED_SCALE), ...GARDEN.map(([a, d, s]) => onLot(x, y, turns, a, d, GARDEN_TREE, s))];
     case "shop":
-      return [commercialOne(pick(SHOP_POOL, x, y))];
+      if (tier === 1) return [commercialOne(pick(SHOP_POOL, x, y), SMALL_SHOP_SCALE)];
+      return [commercialOne(tier === 2 ? pick(SHOP_POOL, x, y) : SLAB)];
     case "office":
-      return [commercialOne(pick(tier < 3 ? OFFICE_LOW_POOL : OFFICE_TOWER_POOL, x, y))];
+      return [commercialOne(tier === 1 ? pick(OFFICE_LOW_POOL, x, y) : tier === 2 ? SLAB : pick(OFFICE_HIGH_POOL, x, y))];
     case "apartment":
       return tier < 3 ? [house(HOUSE_SCALE[tier - 1])] : [commercialOne(pick(APARTMENT_POOL, x, y))];
     case "landmark":
@@ -182,8 +193,11 @@ export function buildingPlacements(kind: Kind, tier: 1 | 2 | 3, x: number, y: nu
       ];
     case "house":
       return [house(HOUSE_SCALE[tier - 1])];
-    case "industrial":
-      return [commercialOne(pick(OFFICE_LOW_POOL, x, y))]; // until the industrial kit's models are in (plan Task 4)
+    case "industrial": {
+      // the extras stand in the lot's back corners, the building in the middle
+      const extras = INDUSTRY_EXTRAS[tier - 1].map((m, i) => onLot(x, y, turns, i === 0 ? 0.3 : -0.3, -0.3, m, 0.5));
+      return [{ model: pick(INDUSTRY_POOLS[tier - 1], x, y), x, y, turns, scale: 0.5, colour: WHITE }, ...extras];
+    }
   }
 }
 
@@ -354,6 +368,8 @@ export const MODEL_NAMES: readonly string[] = [
   FURNITURE.highwayLight,
   FURNITURE.highwaySign,
   ...ROAD_BASE.map(([name]) => FURNITURE.barrier(name)).filter((m): m is string => m !== null),
+  ...INDUSTRY_POOLS.flat(),
+  ...INDUSTRY_EXTRAS.flat(),
 ];
 
 /** One model on one cell (or, for a streetlight, a point inside it). */

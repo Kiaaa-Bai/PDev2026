@@ -329,14 +329,37 @@ export class CitySim implements Sim {
     return { ...this.need };
   }
 
-  /** 0 for no house yet, else the house's tier at time t. */
+  /**
+   * 0 for no building yet, else its density at time t (1 low, 2 medium, 3 high): it grows with age (three times as fast
+   * beside a busy road), and with `zoning` no denser than the best road it touches allows — a street (grade 1–2) low,
+   * a lit street (3) medium, an avenue or highway (4–5) high — catching up at once when that road is upgraded.
+   */
   houseTier(x: number, y: number, t: number): 0 | 1 | 2 | 3 {
     const ready = this.lots.get(cellKey(x, y));
     if (ready === undefined || t < ready) return 0;
     let age = t - ready;
     if (this.besideBusyRoad(x, y)) age *= 3;
     const [two, three] = this.cfg.tierAgesMs;
-    return age >= three ? 3 : age >= two ? 2 : 1;
+    const byAge = age >= three ? 3 : age >= two ? 2 : 1;
+    if (!this.cfg.zoning) return byAge;
+    let grade = 0;
+    for (let d = 0; d < 4; d++) {
+      const nx = x + DX[d];
+      const ny = y + DY[d];
+      const n = this.road.get(cellKey(nx, ny));
+      if (n !== undefined) grade = Math.max(grade, this.gradeAt(nx, ny) || gradeOfPasses(n));
+    }
+    const cap = grade >= 4 ? 3 : grade === 3 ? 2 : 1;
+    return Math.min(byAge, cap) as 1 | 2 | 3;
+  }
+
+  /** What the lot at (x, y) is drawn as: its kind, or a shop or an office where its road rezoned a home. */
+  lotForm(x: number, y: number): Kind | undefined {
+    const kind = this.kinds.get(cellKey(x, y));
+    if (kind === undefined) return undefined;
+    const zone = this.lotZone(x, y);
+    if (zone === zoneOf(kind)) return kind;
+    return zone === "commercial" ? "shop" : zone === "office" ? "office" : kind;
   }
 
   /** Houses standing at time t. */

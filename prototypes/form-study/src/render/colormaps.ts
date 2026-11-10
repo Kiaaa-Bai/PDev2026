@@ -5,11 +5,12 @@
 
 import car from "../assets/kenney/car/Textures/colormap.png?url";
 import commercial from "../assets/kenney/commercial/Textures/colormap.png?url";
+import industrial from "../assets/kenney/industrial/Textures/colormap.png?url";
 import roads from "../assets/kenney/roads/Textures/colormap.png?url";
 import suburban from "../assets/kenney/suburban/Textures/colormap.png?url";
 
-/** Each kit's palette picture, by the kit's folder under assets/kenney. The four palettes differ. */
-export const COLORMAPS: Readonly<Record<string, string>> = { car, commercial, roads, suburban };
+/** Each kit's palette picture, by the kit's folder under assets/kenney. The five palettes differ. */
+export const COLORMAPS: Readonly<Record<string, string>> = { car, commercial, industrial, roads, suburban };
 
 /** The kit a model belongs to: the folder in its path. */
 export const kitOf = (model: string): string => model.slice(0, model.indexOf("/"));

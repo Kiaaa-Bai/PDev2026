@@ -449,15 +449,14 @@ describe("building kinds", () => {
     expect(lot("row", 1)).toHaveLength(1);
   });
 
-  it("draws a shop from the commercial a to e models, in its own colours, whatever the tier", () => {
-    const first = lot("shop", 1);
-    for (const tier of TIERS) {
+  it("draws a shop from the commercial a to e models in its own colours, small at low density and full-size at medium", () => {
+    for (const tier of [1, 2] as const) {
       const placed = lot("shop", tier);
       expect(placed).toHaveLength(1);
       expect(SHOP_POOL).toContain(placed[0].model);
       expect(placed[0].colour).toBe(WHITE);
-      expect(placed).toEqual(first);
     }
+    expect(lot("shop", 1)[0].model).toBe(lot("shop", 2)[0].model);
     expect(SHOP_POOL).toEqual("abcde".split("").map((c) => `commercial/building-${c}`));
   });
 
@@ -476,7 +475,7 @@ describe("building kinds", () => {
 
   it("draws the shop and the tier 3 apartment at the size that fits their model", () => {
     for (let x = 0; x < 40; x++) {
-      const shop = lot("shop", 1, x, -1)[0];
+      const shop = lot("shop", 2, x, -1)[0];
       expect(shop.scale).toBe(commercialScale(shop.model));
       const block = lot("apartment", 3, x, -1)[0];
       expect(block.scale).toBe(commercialScale(block.model));
@@ -563,14 +562,12 @@ describe("building kinds", () => {
     }
   });
 
-  it("draws an office low (the commercial a to e models) at tiers 1 and 2 and as a tower (k to n) at tier 3", () => {
+  it("draws an office low (the commercial a to e models) at density 1, the slab at 2 and a tower (l to n) at 3", () => {
     for (let x = 0; x < 40; x++) {
-      for (const tier of [1, 2] as const) {
-        const placed = lot("office", tier, x, -1);
-        expect(placed).toHaveLength(1);
-        expect(OFFICE_LOW_POOL, `x ${x} tier ${tier}`).toContain(placed[0].model);
-        expect(placed[0].colour).toBe(WHITE);
-      }
+      const low = lot("office", 1, x, -1);
+      expect(low).toHaveLength(1);
+      expect(OFFICE_LOW_POOL, `x ${x}`).toContain(low[0].model);
+      expect(lot("office", 2, x, -1)[0].model).toBe("commercial/building-k");
       const tower = lot("office", 3, x, -1);
       expect(tower).toHaveLength(1);
       expect(OFFICE_TOWER_POOL, `x ${x}`).toContain(tower[0].model);
@@ -595,9 +592,8 @@ describe("building kinds", () => {
     expect(towers.size).toBeGreaterThan(2);
   });
 
-  it("lets an office rise from low to tower when its house ages to tier 3, which layoutKey sees", () => {
-    expect(layoutKey(lot("office", 1))).toBe(layoutKey(lot("office", 2)));
-    expect(layoutKey(lot("office", 3))).not.toBe(layoutKey(lot("office", 1)));
+  it("lets an office rise from low to slab to tower, which layoutKey sees", () => {
+    expect(new Set([1, 2, 3].map((t) => layoutKey(lot("office", t as 1 | 2 | 3)))).size).toBe(3);
   });
 
   it("draws every office at the size that fits its model", () => {
@@ -625,7 +621,7 @@ describe("building kinds", () => {
     });
 
     it("does not change with the tier for kinds that do not grow", () => {
-      for (const kind of ["park", "shop", "landmark"] as const) expect(new Set(TIERS.map((t) => key(kind, t))).size, kind).toBe(1);
+      for (const kind of ["park", "landmark"] as const) expect(new Set(TIERS.map((t) => key(kind, t))).size, kind).toBe(1);
     });
 
     it("notices an extra placement alone: a park tree or a garden tree moving, appearing or going", () => {
@@ -975,5 +971,39 @@ describe("road furniture by grade", () => {
     const a = lay(straight, 2);
     const b = a.map((p) => ({ ...p, flat: false }));
     expect(layoutKey(a)).not.toBe(layoutKey(b));
+  });
+});
+
+describe("buildings by kind and density", () => {
+  const at = (kind: Kind, tier: 1 | 2 | 3) => buildingPlacements(kind, tier, 3, 4, 0, 0);
+  const letters = (prefix: string, ls: string) => ls.split("").map((c) => `${prefix}${c}`);
+
+  it("grows a shop from a small one to a full-size one to a commercial slab", () => {
+    const small = at("shop", 1);
+    expect(letters("commercial/building-", "abcde")).toContain(small[0].model);
+    expect(small[0].scale).toBe(0.6);
+    expect(at("shop", 2)[0].scale).toBe(commercialScale(at("shop", 2)[0].model));
+    expect(at("shop", 3)[0].model).toBe("commercial/building-k");
+  });
+
+  it("grows an office from a low block to the slab to a tower", () => {
+    expect(letters("commercial/building-", "abcde")).toContain(at("office", 1)[0].model);
+    expect(at("office", 2)[0].model).toBe("commercial/building-k");
+    expect(letters("commercial/building-", "lmn")).toContain(at("office", 3)[0].model);
+  });
+
+  it("grows industry from sheds to factories with a chimney to plants with a big chimney and a tank", () => {
+    expect(letters("industrial/building-", "abc")).toContain(at("industrial", 1)[0].model);
+    expect(at("industrial", 1)).toHaveLength(1);
+    const mid = at("industrial", 2).map((p) => p.model);
+    expect(letters("industrial/building-", "def")).toContain(mid[0]);
+    expect(mid).toContain("industrial/chimney-small");
+    const big = at("industrial", 3).map((p) => p.model);
+    expect(letters("industrial/building-", "gh")).toContain(big[0]);
+    expect(big).toContain("industrial/chimney-large");
+    expect(big).toContain("industrial/detail-tank");
+    for (const m of [...letters("industrial/building-", "abcdefgh"), "industrial/chimney-small", "industrial/chimney-large", "industrial/detail-tank"]) {
+      expect(MODEL_NAMES, m).toContain(m);
+    }
   });
 });

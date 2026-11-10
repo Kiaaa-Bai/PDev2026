@@ -526,7 +526,7 @@ export class CityView3D {
     const looks: Looks = {
       driven: (x, y) => this.sim.road.get(cellKey(x, y)) ?? 0,
       built: (x, y) => this.sim.lots.get(cellKey(x, y)) ?? 0,
-      kind: (x, y) => this.sim.lotKind(x, y),
+      kind: (x, y) => this.sim.lotForm(x, y),
       grade: (x, y) => this.sim.gradeAt(x, y),
     };
     const placed = layoutCells(has, (x, y) => this.sim.houseTier(x, y, t), Math.round(at.x), Math.round(at.y), radius, looks);

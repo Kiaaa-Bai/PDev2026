@@ -1360,6 +1360,9 @@ describe("CitySim zones", () => {
     expect(sim).not.toBeNull();
     expect(sim.lotZone(1, 1)).toBe("commercial");
     expect(sim.lotZone(3, 1)).toBe("residential");
+    // and is drawn as what it holds now
+    expect(sim.lotForm(1, 1)).toBe("shop");
+    expect(sim.lotForm(3, 1)).toBe("house");
     const again = CitySim.restore(zoned, through(sim.snapshot()))!;
     expect(again.lotZone(1, 1)).toBe("commercial");
     // with zoning off, a home stays a home whatever its road
@@ -1388,5 +1391,44 @@ describe("people in rezoned lots", () => {
     expect(homes.has("1,1")).toBe(false);
     expect(homes.has("3,1")).toBe(true);
     expect(jobsOf(sim).filter((j) => j.work.join(",") === "1,1")).toHaveLength(JOBS.shop);
+  });
+});
+
+describe("CitySim density capped by the road", () => {
+  const zonedCfg: CityConfig = { ...cfg, zoning: true }; // tiers at 5 and 20 minutes
+  /** A house at (2, 1), built at 0, beside a row of road along y = 0 shown at `grade` (driven once, so not busy). */
+  function houseBeside(grade: 1 | 2 | 3 | 4 | 5, c: CityConfig = zonedCfg): CitySim {
+    const snap = through(new CitySim(c).snapshot());
+    snap.road = Array.from({ length: 5 }, (_, i): [string, number] => [cellKey(i, 0), 1]);
+    snap.grades = snap.road.map(([k]) => [k, grade]);
+    snap.lots = [[cellKey(2, 1), 0]];
+    snap.kinds = [[cellKey(2, 1), "house"]];
+    snap.rolls = [[cellKey(2, 1), 0.9]];
+    return CitySim.restore(c, snap)!;
+  }
+  const MIN = 60_000;
+
+  it("never grows past low density beside a street, however old", () => {
+    expect(houseBeside(2).houseTier(2, 1, 600 * MIN)).toBe(1);
+  });
+
+  it("reaches medium at the first age tier beside a lit street, and stays", () => {
+    const sim = houseBeside(3);
+    expect(sim.houseTier(2, 1, 4 * MIN)).toBe(1);
+    expect(sim.houseTier(2, 1, 6 * MIN)).toBe(2);
+    expect(sim.houseTier(2, 1, 600 * MIN)).toBe(2);
+  });
+
+  it("reaches high at the second age tier beside an avenue", () => {
+    expect(houseBeside(4).houseTier(2, 1, 21 * MIN)).toBe(3);
+  });
+
+  it("jumps to its age's tier at once when its road is upgraded", () => {
+    expect(houseBeside(2).houseTier(2, 1, 30 * MIN)).toBe(1);
+    expect(houseBeside(4).houseTier(2, 1, 30 * MIN)).toBe(3);
+  });
+
+  it("grows by age alone with zoning off", () => {
+    expect(houseBeside(2, cfg).houseTier(2, 1, 21 * MIN)).toBe(3);
   });
 });

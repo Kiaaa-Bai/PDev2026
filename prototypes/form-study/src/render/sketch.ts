@@ -51,7 +51,7 @@ export function sketchItems(sim: CitySim, centre: { x: number; y: number }, radi
     for (let x = cx - radius; x <= cx + radius; x++) {
       const n = driven(x, y);
       if (n === undefined) {
-        if (sim.lots.has(cellKey(x, y))) lots.push({ x, y, kind: sim.lotKind(x, y) ?? "house" });
+        if (sim.lots.has(cellKey(x, y))) lots.push({ x, y, kind: sim.lotForm(x, y) ?? "house" });
         continue;
       }
       const grade = gradeOf(x, y, n);
