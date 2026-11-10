@@ -18,6 +18,10 @@ export interface CitySnapshot {
   roller: { x: number; y: number; dir: Dir; progress: number };
   driven: number;
   distance: number;
+  /** The roller's speed at the last touch when it follows the pointer, in tiles a second (0 when it does not). */
+  pace: number;
+  /** How much the city's shape stretched the coast from the last touch (1 when shapeCoast is off). */
+  coast: number;
   /** null before the first advance. */
   clock: number | null;
   /** null before the first touch, since JSON has no -Infinity. */
@@ -58,6 +62,10 @@ export function isSnapshot(s: unknown): s is CitySnapshot {
     (r.dir === 0 || r.dir === 1 || r.dir === 2 || r.dir === 3) &&
     isNumber(v.driven) &&
     isNumber(v.distance) &&
+    isNumber(v.pace) &&
+    v.pace >= 0 &&
+    isNumber(v.coast) &&
+    v.coast > 0 &&
     isNumberOrNull(v.clock) &&
     isNumberOrNull(v.lastInput) &&
     typeof v.started === "boolean" &&

@@ -3,13 +3,22 @@ import type { FarmConfig } from "./sims/farm";
 import type { MonsterConfig } from "./sims/monster";
 
 /** Bump when the city's rules change, so an old snapshot is dropped and the days are replayed. */
-export const CITY_RULES_VERSION = 4;
+export const CITY_RULES_VERSION = 7;
 
 export const CITY: CityConfig = {
-  speed: 1,
+  // The roller follows the cursor: a tile per 100 points it moves, up to 20 tiles a second (rules 5).
+  speed: 20,
+  ptPerTile: 100,
+  smoothMs: 100,
+  // never a second road right beside one running the same way: merge onto it, so passes widen one road (rules 6)
+  mergeBeside: true,
   steerMin: 40, // screen points
-  idleStopMs: 30_000,
-  slowMs: 30_000,
+  // When the cursor stops the roller coasts on, slowing evenly over 2 s (so it covers speed × 1 s), and the city's
+  // shape stretches or shortens that coast up to 4× each way so the city spreads out instead of into a band (rules 7).
+  // On Kia's days 11-03 → 11-10: width/height on screen 18.9 → 1.9, 5,215 → 13,246 road cells.
+  idleStopMs: 2000,
+  slowMs: 2000,
+  shapeCoast: { aspect: 1.5, strength: 1.5, min: 0.25, max: 4 },
   lotDelayMs: [3_000, 15_000],
   lotChance: 0.6,
   tierAgesMs: [5 * 60_000, 20 * 60_000],
