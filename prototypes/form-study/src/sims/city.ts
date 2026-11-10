@@ -3,6 +3,7 @@ import type { Point } from "../data";
 import { Rng } from "../rng";
 import { isSnapshot, type CitySnapshot } from "./city-snapshot";
 import { isUnlocked, JOBS, kindFor, neighboursAt, RESIDENTS, type Demand, type Kind } from "./kinds";
+import { gradeOfPasses, runGrade, runThrough, type Grade } from "./grades";
 import { headingFor } from "./steer";
 import type { Sim } from "./types";
 
@@ -103,6 +104,8 @@ export class CitySim implements Sim {
    * over the road cells. Every term is a whole or half number, so the sums are exact whatever order they are added in.
    */
   private spread = { n: 0, u: 0, uu: 0, v: 0, vv: 0 };
+  /** Each road cell's grade: the highest its straight runs have ever reached, so it never falls (see `regrade`). */
+  private grades = new Map<string, Grade>();
   private clock: number | null = null;
   private lastInput = -Infinity;
   private started = false;
@@ -176,6 +179,7 @@ export class CitySim implements Sim {
     return {
       rules: CITY_RULES_VERSION,
       road: [...this.road],
+      grades: [...this.grades],
       lots: [...this.lots],
       kinds: [...this.kinds],
       landmark: this.landmarkPlaced,
@@ -200,6 +204,7 @@ export class CitySim implements Sim {
       const [x, y] = k.split(",").map(Number);
       sim.addSpread(x, y);
     }
+    for (const [k, g] of s.grades) sim.grades.set(k, g);
     for (const [k, t] of s.lots) sim.lots.set(k, t);
     for (const [k, kind] of s.kinds) {
       sim.kinds.set(k, kind);
@@ -267,6 +272,33 @@ export class CitySim implements Sim {
 
   hasRoad(x: number, y: number): boolean {
     return this.road.has(cellKey(x, y));
+  }
+
+  /** The road's grade at (x, y), 1 dirt to 5 highway, or 0 where there is no road. */
+  gradeAt(x: number, y: number): Grade | 0 {
+    return this.grades.get(cellKey(x, y)) ?? 0;
+  }
+
+  /**
+   * After the cell at (x, y) was driven: grade the two straight runs through it again (only they can have changed) and
+   * raise every cell of each to its run's grade, never lowering one. A cell on no run of two or more cells takes the
+   * grade of its own passes.
+   */
+  private regrade(x: number, y: number): void {
+    const has = (cx: number, cy: number) => this.road.has(cellKey(cx, cy));
+    let onRun = false;
+    for (const axis of ["x", "y"] as const) {
+      const run = runThrough(has, x, y, axis);
+      if (run.length < 2) continue;
+      onRun = true;
+      const g = runGrade(run.map(([cx, cy]) => this.road.get(cellKey(cx, cy)) ?? 0));
+      for (const [cx, cy] of run) this.raiseGrade(cellKey(cx, cy), g);
+    }
+    if (!onRun) this.raiseGrade(cellKey(x, y), gradeOfPasses(this.road.get(cellKey(x, y)) ?? 0));
+  }
+
+  private raiseGrade(k: string, g: Grade): void {
+    if (g > (this.grades.get(k) ?? 0)) this.grades.set(k, g);
   }
 
   /** The kind of building on the lot at (x, y), or undefined where there is no lot. */
@@ -444,6 +476,7 @@ export class CitySim implements Sim {
     const k = cellKey(x, y);
     if (!this.road.has(k)) this.addSpread(x, y);
     this.road.set(k, (this.road.get(k) ?? 0) + 1);
+    this.regrade(x, y);
     this.lots.delete(k);
     const flattened = this.kinds.get(k);
     if (flattened !== undefined) {

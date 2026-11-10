@@ -321,8 +321,8 @@ describe("CitySim kinds", () => {
   }
   const wild: CityConfig = { ...cfg, lotChance: 0.5, lotDelayMs: [3_000, 15_000], seed: 5 };
 
-  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) and a coast shaped by the city (7) change what a city grows", () => {
-    expect(CITY_RULES_VERSION).toBe(7);
+  it("bumps the rules version, since kinds (4) and the roller following the cursor's speed (5) merging onto roads beside it (6) a coast shaped by the city (7) and road grades kept in the snapshot (8) change what a city grows", () => {
+    expect(CITY_RULES_VERSION).toBe(8);
   });
 
   it("gives every lot a kind, stored apart from the time its house appears", () => {
@@ -1218,5 +1218,74 @@ describe("CitySim coasting by the city's shape", () => {
     expect(b.lots).toEqual(a.lots);
     expect(b.at.x).toBeCloseTo(a.at.x, 9);
     expect(b.at.y).toBeCloseTo(a.at.y, 9);
+  });
+});
+
+describe("CitySim grades", () => {
+  /** A city holding exactly these road cells (each driven `n` times), the roller at `at`, not yet started. */
+  function cityOfRoad(c: CityConfig, road: [number, number, number][], at: { x: number; y: number; dir: 0 | 1 | 2 | 3 }): CitySim {
+    const snap = through(new CitySim(c).snapshot());
+    snap.road = road.map(([x, y, n]) => [cellKey(x, y), n]);
+    snap.roller = { ...at, progress: 0 };
+    return CitySim.restore(c, snap)!;
+  }
+  const row = (from: number, to: number, n: number): [number, number, number][] =>
+    Array.from({ length: to - from + 1 }, (_, i) => [from + i, 0, n]);
+  /** Drive straight on for `tiles` whole tiles from a tap at 1000 (the test config drives 1 tile a second). */
+  const drive = (sim: CitySim, tiles: number) => {
+    swipe(sim, 1000);
+    sim.advanceTo(1000 + tiles * 1000 + 500);
+  };
+
+  it("makes a road driven four times an avenue, every cell of it", () => {
+    // driven three times already; the roller drives it once more, from x = 0 to x = 9
+    const sim = cityOfRoad(cfg, row(0, 9, 3), { x: 0, y: 0, dir: 0 });
+    drive(sim, 9);
+    for (let x = 0; x <= 9; x++) expect(sim.gradeAt(x, 0), `x = ${x}`).toBe(4);
+    expect(sim.gradeAt(0, 5)).toBe(0); // no road
+  });
+
+  it("never lowers a grade when the road is extended with fresh cells", () => {
+    const sim = cityOfRoad(cfg, row(0, 9, 3), { x: 0, y: 0, dir: 0 });
+    drive(sim, 25); // on past x = 9 into new ground: the run's median falls to 1
+    for (let x = 0; x <= 9; x++) expect(sim.gradeAt(x, 0), `x = ${x}`).toBe(4);
+    expect(sim.road.get(cellKey(25, 0))).toBe(1);
+  });
+
+  it("gives a crossing the higher grade of its two runs", () => {
+    // a highway along y = 0 ...
+    const a = cityOfRoad(cfg, row(-5, 5, 5), { x: -5, y: 0, dir: 0 });
+    drive(a, 10);
+    expect(a.gradeAt(0, 0)).toBe(5);
+    // ... then a dirt road crossing it at x = 0, driven once from y = -5 to y = 5
+    const snap = through(a.snapshot());
+    snap.roller = { x: 0, y: -5, dir: 1, progress: 0 };
+    snap.clock = null;
+    snap.lastInput = null;
+    const b = CitySim.restore(cfg, snap)!;
+    drive(b, 10);
+    expect(b.gradeAt(0, 0)).toBe(5);
+    expect(b.gradeAt(0, 3)).toBe(1);
+    expect(b.gradeAt(3, 0)).toBe(5);
+  });
+
+  it("keeps every grade through a snapshot", () => {
+    const sim = cityOfRoad(cfg, row(0, 9, 5), { x: 0, y: 0, dir: 0 });
+    drive(sim, 20);
+    const restored = CitySim.restore(cfg, through(sim.snapshot()))!;
+    expect(restored).not.toBeNull();
+    for (const k of sim.road.keys()) {
+      const [x, y] = k.split(",").map(Number);
+      expect(restored.gradeAt(x, y), k).toBe(sim.gradeAt(x, y));
+    }
+  });
+
+  it("paves on along a 2,000-cell straight road quickly", () => {
+    const sim = cityOfRoad(cfg, row(0, 1999, 1), { x: 1999, y: 0, dir: 0 });
+    swipe(sim, 1000);
+    const t0 = performance.now();
+    sim.advanceTo(1000 + 3500); // three more cells, each re-grading the whole run
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(sim.road.has(cellKey(2002, 0))).toBe(true);
   });
 });
